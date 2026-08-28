@@ -297,9 +297,22 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 		return NULL;
 	}
 	
-	tdata->coinbasevalue = json_integer_value(json_object_get(gbt, "coinbasevalue"));
+	jval = json_object_get(gbt, "coinbasevalue");
+	if (!jval) {
+		datum_blocktemplates_error = "Missing data from GBT JSON (coinbasevalue)";
+		DLOG_ERROR("%s", datum_blocktemplates_error);
+		return NULL;
+	}
+	tdata->coinbasevalue = json_integer_value(jval);
 	if (!tdata->coinbasevalue) {
-		DLOG_ERROR("Missing data from GBT JSON (coinbasevalue)");
+		// Present and zero, which is a different thing from absent and was
+		// reported as "missing" until now. A chain reaches this when its
+		// subsidy has halved away to nothing and no fees are on offer: on
+		// regtest, where the interval is 150 blocks, that is height 4950. The
+		// old message sent you looking for a broken node or a bad RPC reply,
+		// and the node was answering correctly the whole time.
+		datum_blocktemplates_error = "Block subsidy is zero and there are no fees, so there is nothing to mine for. On regtest this happens once the chain passes 33 halvings (height 4950); start a fresh chain or use a network whose subsidy is still non-zero.";
+		DLOG_ERROR("%s", datum_blocktemplates_error);
 		return NULL;
 	}
 	
@@ -623,6 +636,17 @@ void *datum_gateway_template_thread(void *args) {
 			} else {
 				DLOG_DEBUG("DEBUG: calling datum_gbt_parser (new=%d)", was_notified?1:0);
 				t = datum_gbt_parser(res_val);
+				
+				if (!t) {
+					// The parser reports its own reason; only fall back to a
+					// generic one if it did not. Without this the status page
+					// showed "Initialising..." indefinitely, because that is
+					// what it displays when no error is recorded and no job
+					// exists yet, which is indistinguishable from starting up.
+					if (!datum_blocktemplates_error) {
+						datum_blocktemplates_error = "Could not parse the block template.";
+					}
+				}
 				
 				if (t) {
 					datum_blocktemplates_error = NULL;
