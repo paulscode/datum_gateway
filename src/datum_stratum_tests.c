@@ -618,6 +618,29 @@ static void datum_stratum_password_opts_tests(void) {
 		datum_test(m.client_min_diff == 0);
 	}
 
+	// An unusable request is ignored rather than clamped to the bound, so the client
+	// keeps ordinary vardiff instead of being parked at a difficulty a floor would
+	// never let it come back down from.
+	memset(&m, 0, sizeof(m));
+	m.current_diff = 16384;
+	datum_stratum_apply_password_opts(&m, "d=35184372088832");   // 2^45
+	datum_test(m.client_min_diff == 0);
+	datum_test(m.current_diff == 16384);
+	// strtoull saturates rather than failing, so a long run of digits arrives as
+	// 2^64-1 and must not reach the target maths.
+	datum_stratum_apply_password_opts(&m, "d=99999999999999999999999999");
+	datum_test(m.client_min_diff == 0);
+	datum_test(m.current_diff == 16384);
+	// and the same for a fixed request
+	datum_stratum_apply_password_opts(&m, "fd=35184372088832");
+	datum_test(m.client_min_diff == 0);
+	datum_test(m.client_fixed_diff == false);
+	// The bound does not intrude on anything real. A miner running at an exahash
+	// wants roughly 1.4e10 for a share a minute, far below this.
+	memset(&m, 0, sizeof(m));
+	datum_stratum_apply_password_opts(&m, "d=1099511627776");   // 2^40
+	datum_test(m.client_min_diff == (1ULL << 40));
+
 	// The key has to be exactly "d" or "fd". A password that merely starts with those
 	// letters and happens to contain digits must not be read as a difficulty: without
 	// the check on the separator, "d12345" parses as a request for 345.
