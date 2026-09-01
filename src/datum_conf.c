@@ -595,15 +595,18 @@ int datum_read_config(const char *conffile) {
 		return 0;
 	}
 
+	// Range first, then the power-of-two adjustment. roundDownToPowerOfTwo_64 is
+	// 1ULL << (63 - __builtin_clzll(x)) and __builtin_clzll(0) is undefined, so a
+	// configured 0 has to be rejected before it is rounded rather than after.
+	if (datum_config.stratum_v1_vardiff_client_min < 1) {
+		DLOG_FATAL("Stratum server stratum.vardiff_client_min must be at least 1");
+		return 0;
+	}
+
 	if (roundDownToPowerOfTwo_64(datum_config.stratum_v1_vardiff_client_min) != datum_config.stratum_v1_vardiff_client_min) {
 		const int nv = roundDownToPowerOfTwo_64(datum_config.stratum_v1_vardiff_client_min);
 		DLOG_WARN("stratum.vardiff_client_min MUST be a power of two. adjusting from %d to %d", datum_config.stratum_v1_vardiff_client_min, nv);
 		datum_config.stratum_v1_vardiff_client_min = nv;
-	}
-
-	if (datum_config.stratum_v1_vardiff_client_min < 1) {
-		DLOG_FATAL("Stratum server stratum.vardiff_client_min must be at least 1");
-		return 0;
 	}
 
 	if (datum_config.stratum_v1_max_clients > (datum_config.stratum_v1_max_clients_per_thread*datum_config.stratum_v1_max_threads)) {

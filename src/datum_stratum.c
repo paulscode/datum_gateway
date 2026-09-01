@@ -1616,6 +1616,26 @@ void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw) {
 		d = strtoull(val, &end, 10);
 		if ((end == val) || (!d)) continue;
 
+		// A sanity bound, so that an unbounded 64-bit number from the wire does not
+		// reach the difficulty and share-target path. strtoull saturates rather than
+		// failing, so without this a long enough run of digits arrives as 2^64-1.
+		//
+		// It is not protection against a mistyped value, and cannot be: a miner at an
+		// exahash legitimately wants around 1.4e10, so any bound loose enough to serve
+		// that miner is also loose enough to accept a request several times too large
+		// for a small one. A client asking for more than it can find remains free to.
+		//
+		// Ignored rather than clamped to the bound. The request is a floor as well as
+		// a starting point, so vardiff cannot bring a client back down from a value
+		// too high for it; clamping would leave the miner parked where it can never
+		// find a share, while ignoring leaves ordinary vardiff running. Too LOW is
+		// different and is clamped up below, because there the intent is unambiguous
+		// and the clamped value still mines.
+		if (d > (1ULL << 44)) {
+			DLOG_WARN("Client asked for difficulty %"PRIu64", which is beyond anything usable; ignoring it", d);
+			continue;
+		}
+
 		d = roundDownToPowerOfTwo_64(d);
 
 		// How low a client is allowed to ask. vardiff_client_min is the operator's
@@ -1669,9 +1689,16 @@ int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	strncpy(m->last_auth_username, username_s, sizeof(m->last_auth_username) - 1);
 	m->last_auth_username[sizeof(m->last_auth_username)-1] = 0;
 
-	password = json_array_get(params_obj, 1);
-	if (password) {
-		datum_stratum_apply_password_opts(m, json_string_value(password));
+	// First authorize only. A client may send mining.authorize more than once on one
+	// connection, and re-reading the password each time would let it alternate between
+	// two values to make the Gateway build and send a full job per request, which is a
+	// good deal more work than the small result this used to reply with. Reading it
+	// once is also what the feature means: a difficulty to start at.
+	if (!m->authorized) {
+		password = json_array_get(params_obj, 1);
+		if (password) {
+			datum_stratum_apply_password_opts(m, json_string_value(password));
+		}
 	}
 
 	char idbuf[160];
