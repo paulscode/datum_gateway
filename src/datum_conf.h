@@ -116,6 +116,7 @@ typedef struct {
 	int stratum_v1_trust_proxy;
 	
 	int stratum_v1_vardiff_min;
+	int stratum_v1_vardiff_client_min;
 	int stratum_v1_vardiff_target_shares_min;
 	int stratum_v1_vardiff_quickdiff_count;
 	int stratum_v1_vardiff_quickdiff_delta;
