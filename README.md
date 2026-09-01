@@ -142,6 +142,7 @@ There is an [example configuration file included in the doc/ directory](doc/exam
 Note that the API/web admin password is also used for preventing CSRF attacks, so it is crucial you set it to something reasonably secure (or disable the API/web interface entirely).
 
 You should review the [documentation on usernames](doc/usernames.md) next.
+If your miners need to run at a difficulty other than the one vardiff picks for them, see the [documentation on passwords](doc/passwords.md).
 Once you have everything running, you can point miners at the Gateway.
 
 ### BLAKE2b header v2 (Knots POW change)

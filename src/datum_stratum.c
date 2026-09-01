@@ -801,18 +801,35 @@ void reset_vardiff_stats(T_DATUM_CLIENT_DATA *c) {
 	m->share_snap_tsms = m->sdata->loop_tsms;
 }
 
+// The difficulty floor to apply to this client on a downward vardiff step.
+//
+// stratum.vardiff_min is the operator's preference for miners that did not say
+// anything, so a client that did ask (see client_mining_authorize) replaces it.
+// The two other floors are not preferences and are enforced elsewhere regardless:
+// forced_high_min_diff is a compatibility workaround for a fingerprinted client
+// that misbehaves lower, and datum_config.override_vardiff_min is the pool's own
+// declared minimum, applied in send_mining_notify for DATUM jobs, below which the
+// pool would simply reject the shares.
+static inline uint64_t client_vardiff_min(const T_DATUM_MINER_DATA *m) {
+	if (m->client_min_diff) return m->client_min_diff;
+	return (uint64_t)datum_config.stratum_v1_vardiff_min;
+}
+
 void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 	// Should be called at/around a share being accepted?
 	// before processing a mining notify? (for downward
-	
+
 	T_DATUM_MINER_DATA * const m = c->app_client_data;
 	uint64_t delta_tsms;
 	uint64_t ms_per_share;
 	uint64_t target_ms_share;
-	
+
+	// the client asked to be held at one difficulty, so there is nothing to vary
+	if (m->client_fixed_diff) return;
+
 	// if we already have a diff change pending, don't do calcs again
 	if (m->current_diff != m->last_sent_diff) return;
-	
+
 	// don't even bother until we have at least X shares to work with for quick diff
 	if ((!no_quick) && (m->share_count_since_snap < datum_config.stratum_v1_vardiff_quickdiff_count)) {
 		return;
@@ -829,8 +846,8 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 			if (m->current_diff < m->forced_high_min_diff) {
 				m->current_diff = m->forced_high_min_diff;
 			}
-			if (m->current_diff < datum_config.stratum_v1_vardiff_min) {
-				m->current_diff = datum_config.stratum_v1_vardiff_min;
+			if (m->current_diff < client_vardiff_min(m)) {
+				m->current_diff = client_vardiff_min(m);
 			}
 			reset_vardiff_stats(c);
 		}
@@ -880,8 +897,8 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 		if (m->current_diff < m->forced_high_min_diff) {
 			m->current_diff = m->forced_high_min_diff;
 		}
-		if (m->current_diff < datum_config.stratum_v1_vardiff_min) {
-			m->current_diff = datum_config.stratum_v1_vardiff_min;
+		if (m->current_diff < client_vardiff_min(m)) {
+			m->current_diff = client_vardiff_min(m);
 		}
 		reset_vardiff_stats(c);
 		return;
@@ -1552,13 +1569,93 @@ int client_mining_configure(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	return 0;
 }
 
+// Read difficulty requests out of the stratum password, which DATUM otherwise discards.
+//
+// The grammar is a comma or semicolon separated list of key=value pairs:
+//
+//   d=8192     start here, and hold this as the floor while vardiff adjusts upward
+//   fd=8192    hold exactly here, no vardiff at all
+//
+// Anything unrecognised is skipped, so the passwords miners already send ("x" being
+// the near universal filler) mean what they always did, and a later version can add
+// keys without older gateways choking on them.
+//
+// The value rounds down to a power of two, matching how vardiff steps, and is then
+// held at or above stratum.vardiff_client_min so that a rented rig pointed at this
+// gateway cannot ask for difficulty 1 and bury it in shares. forced_high_min_diff
+// also still wins: that is a compatibility workaround for a client fingerprinted as
+// misbehaving at lower difficulty, not an operator preference, and stratum
+// .fingerprint_miners already exists to turn it off.
+void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw) {
+	char buf[256];
+	char *tok, *save = NULL;
+
+	if ((!pw) || (!pw[0])) return;
+
+	strncpy(buf, pw, sizeof(buf) - 1);
+	buf[sizeof(buf) - 1] = 0;
+
+	for (tok = strtok_r(buf, ",;", &save); tok; tok = strtok_r(NULL, ",;", &save)) {
+		const char *val;
+		char *end = NULL;
+		bool fixed;
+		uint64_t d;
+
+		while ((*tok == ' ') || (*tok == '\t')) tok++;
+
+		if ((tok[0] == 'd') && (tok[1] == '=')) {
+			fixed = false;
+			val = &tok[2];
+		} else if ((tok[0] == 'f') && (tok[1] == 'd') && (tok[2] == '=')) {
+			fixed = true;
+			val = &tok[3];
+		} else {
+			continue;
+		}
+
+		d = strtoull(val, &end, 10);
+		if ((end == val) || (!d)) continue;
+
+		d = roundDownToPowerOfTwo_64(d);
+
+		// How low a client is allowed to ask. vardiff_client_min is the operator's
+		// limit on requests, but it must never be stricter than the difficulty this
+		// gateway already hands out unasked: an operator running vardiff_min below
+		// it has already accepted that load from every client, so refusing to let
+		// one ASK for the same thing would be incoherent. This is not hypothetical
+		// - a Gateway serving small BLAKE2b miners runs vardiff_min far below the
+		// default so that a slow hasher produces shares on connect.
+		{
+			uint64_t lowest = (uint64_t)datum_config.stratum_v1_vardiff_client_min;
+			if ((uint64_t)datum_config.stratum_v1_vardiff_min < lowest) {
+				lowest = (uint64_t)datum_config.stratum_v1_vardiff_min;
+			}
+			if (d < lowest) d = lowest;
+		}
+
+		if (d < m->forced_high_min_diff) {
+			d = m->forced_high_min_diff;
+		}
+
+		m->client_min_diff = d;
+		m->client_fixed_diff = fixed;
+		m->current_diff = d;
+
+		DLOG_DEBUG("Client requested %s difficulty %"PRIu64" via password", fixed ? "fixed" : "minimum", d);
+	}
+}
+
 int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj) {
 	char s[256];
 	const char *username_s;
 	json_t *username;
-	
+	json_t *password;
+	uint64_t prev_diff;
+
 	T_DATUM_MINER_DATA * const m = c->app_client_data;
-	
+
+	prev_diff = m->current_diff;
+
 	username = json_array_get(params_obj, 0);
 	if (!username) {
 		username_s = (const char *)"NULL";
@@ -1571,15 +1668,28 @@ int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	
 	strncpy(m->last_auth_username, username_s, sizeof(m->last_auth_username) - 1);
 	m->last_auth_username[sizeof(m->last_auth_username)-1] = 0;
-	
+
+	password = json_array_get(params_obj, 1);
+	if (password) {
+		datum_stratum_apply_password_opts(m, json_string_value(password));
+	}
+
 	char idbuf[160];
 	stratum_rpc_id_text(c, id, idbuf, sizeof(idbuf));
 	snprintf(s, sizeof(s), "{\"error\":null,\"id\":%s,\"result\":true}\n", idbuf);
 	datum_socket_send_string_to_client(c, s);
 	stratum_rpc_id_clear(c);
-	
+
 	m->authorized = true;
-	
+
+	// mining.subscribe has already sent a difficulty and a job by this point, so a
+	// password that moved the difficulty leaves the client working at the old target
+	// until something else prompts a notify. Send fresh work at the new one, which
+	// also emits the mining.set_difficulty the client is waiting on.
+	if ((m->subscribed) && (m->current_diff != prev_diff)) {
+		send_mining_notify(c, true, false, false);
+	}
+
 	return 0;
 }
 
