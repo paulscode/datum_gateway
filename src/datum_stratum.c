@@ -1409,15 +1409,20 @@ int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	return 0;
 }
 
+// The coinbase a BLAKE2b job commits to, the same for every miner: the
+// subsidy-only one for new-block work, COINBASE_TYPE_TINY (pays only the pool)
+// while the job state is below JOB_STATE_FULL_PRIORITY_WAIT_COINBASER or
+// full_coinbase_ready is unset, and COINBASE_TYPE_YUGE after that. The classes
+// were sized to what SHA256d firmware could accept (see the COINBASE_TYPE_
+// defines); on BLAKE2b work the miner never receives the coinbase, so there is
+// no per-miner selection.
 unsigned int datum_stratum_coinbase_index(
-	const T_DATUM_STRATUM_THREADPOOL_DATA *sdata,
-	const T_DATUM_MINER_DATA *miner, bool new_block) {
+	const T_DATUM_STRATUM_THREADPOOL_DATA *sdata, bool new_block) {
 	if (new_block) return DATUM_COINBASE_ID_EMPTY;
-	if (!sdata || !miner || !sdata->cur_stratum_job ||
+	if (!sdata || !sdata->cur_stratum_job ||
 	    sdata->cur_stratum_job->job_state < JOB_STATE_FULL_PRIORITY_WAIT_COINBASER ||
-	    !sdata->full_coinbase_ready ||
-	    miner->coinbase_selection >= MAX_COINBASE_TYPES) return 0;
-	return miner->coinbase_selection;
+	    !sdata->full_coinbase_ready) return 0;
+	return COINBASE_TYPE_YUGE;
 }
 
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block) {
@@ -1511,7 +1516,7 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	const int notify_out_buf_start = c->out_buf;
 	datum_socket_send_string_to_client(c, "{\"id\":null,\"method\":\"mining.notify\",\"params\":[");
 	
-	cbselect = datum_stratum_coinbase_index(sdata, m, new_block);
+	cbselect = datum_stratum_coinbase_index(sdata, new_block);
 	const bool subsidy_only = cbselect == DATUM_COINBASE_ID_EMPTY;
 	cb = subsidy_only ? &j->subsidy_only_coinbase : &j->coinbase[cbselect];
 	
@@ -1602,8 +1607,8 @@ int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	// set default diff
 	m->current_diff = datum_config.stratum_v1_vardiff_min;
 	
-	// Sv1 is blind to the generation transaction now, so go as large as we want
-	// TODO: We may want to shrink based on block free space in the future
+	// The class every miner is served on BLAKE2b work once the full coinbase is
+	// ready (datum_stratum_coinbase_index); kept per miner only for the API.
 	m->coinbase_selection = COINBASE_TYPE_YUGE;
 	
 	m->useragent[0] = 0;
