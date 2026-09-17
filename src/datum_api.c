@@ -1482,8 +1482,13 @@ int datum_api_config_post(struct MHD_Connection * const connection, char * const
 	{
 		// Unchecked checkboxes are simply omitted, so a hidden field is used to convey them
 		const json_t * const j_checkboxes = json_object_get(j, "checkboxes");
-		const char * const checkboxes = json_string_value(j_checkboxes);
-		const size_t checkboxes_len = json_string_length(j_checkboxes);
+		// A POST that does not carry the hidden field at all: json_string_value gives
+		// NULL and walking it segfaults, taking the whole gateway and everyone mining
+		// through it down. The form always sends it, so this only shows up from a
+		// client posting a partial form, but the credentials to reach here are the
+		// dashboard's own and crashing is never the right answer to malformed input.
+		const char * const checkboxes = json_is_string(j_checkboxes) ? json_string_value(j_checkboxes) : "";
+		const size_t checkboxes_len = json_is_string(j_checkboxes) ? json_string_length(j_checkboxes) : 0;
 		const char *p = checkboxes;
 		char buf[0x100];
 		while (p[0] != '\0') {
