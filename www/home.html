@@ -99,7 +99,7 @@
 				<table>
 					<tr>
 						<td class="label">Point Your Miner At:</td>
-						<td><span id="stratum_endpoint">port ${STRATUM_LISTEN_PORT}</span><span id="stratum_endpoint_note" class="leading_zeros"></span></td>
+						<td><span id="stratum_endpoint">${STRATUM_ENDPOINT}</span><span id="stratum_endpoint_note" class="leading_zeros"></span></td>
 					</tr>
 					<tr>
 						<td class="label">Active Threads:</td>
@@ -191,6 +191,8 @@
 	<p class="note">Note: This page does not automatically refresh</p>
 	<script>
 	(function () {
+		// Already answered server side from stratum.advertised_host.
+		if ("${STRATUM_ENDPOINT_CONFIGURED}" === "1") return;
 		var port = "${STRATUM_LISTEN_PORT}";
 		var host = window.location.hostname;
 		var out = document.getElementById("stratum_endpoint");
