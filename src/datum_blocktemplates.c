@@ -138,7 +138,49 @@ void datum_template_clear(T_DATUM_TEMPLATE_DATA* p) {
 	p->txn_data_offset = 0;
 	p->txn_total_weight = 0;
 	p->txn_total_sigops = 0;
+	p->txn_total_fee = 0;
+	p->block_subsidy = 0;
 	p->txns = p->local_data;
+}
+
+// The value a block containing nothing but its coinbase may pay, which is the
+// subsidy with no fees on top.
+//
+// GBT has no subsidy field, so it is recovered as coinbasevalue minus the fees of
+// the transactions the template offers. That is chain-agnostic, which matters:
+// block_reward() below hardcodes mainnet's 210,000-block halving interval, and on
+// regtest, where it is 150, it returns twice the real subsidy above height 150. A
+// subsidy-only coinbase built from it is rejected bad-cb-amount, so every block
+// found on empty work is thrown away. Found on the lab regtest chain, where it was
+// discarding roughly one block in three.
+//
+// fees_known is false when GBT omitted a fee, or when the template held more
+// transactions than the Gateway tracks and the tally is therefore short. Either
+// way the subtraction would understate the fees and so overstate the subsidy, and
+// overpaying is the fatal direction, so the old height-derived value is used
+// instead. It is clamped to coinbasevalue regardless, which is an upper bound on
+// the subsidy under any halving schedule.
+uint64_t datum_template_subsidy_from_fees(uint64_t coinbasevalue, uint64_t total_fee, uint32_t height, bool fees_known) {
+	uint64_t subsidy;
+	if (fees_known && total_fee <= coinbasevalue) {
+		subsidy = coinbasevalue - total_fee;
+	} else {
+		// Once per run. Templates refresh every few seconds, and a condition that
+		// is going to persist should not fill the log with the same line.
+		static bool warned = false;
+		if (!warned) {
+			warned = true;
+			DLOG_WARN("Block template fees are incomplete, so the subsidy for empty work is being derived from the block height instead. That assumes mainnet's halving interval and is wrong on a chain that does not share it.");
+		}
+		subsidy = block_reward(height);
+	}
+	if (subsidy > coinbasevalue) subsidy = coinbasevalue;
+	return subsidy;
+}
+
+uint64_t datum_template_block_subsidy(const T_DATUM_TEMPLATE_DATA *tdata) {
+	if (!tdata) return 0;
+	return tdata->block_subsidy;
 }
 
 bool datum_gbt_rules_want_blake2b(json_t *gbt) {
@@ -295,6 +337,11 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 		tdata->default_witness_commitment_bin[(i>>1)] = hex2bin_uchar(&tdata->default_witness_commitment[i]);
 	}
 	
+	// Every transaction must report a fee for the subsidy to be recoverable from
+	// coinbasevalue. GBT may omit the key, and BIP22 is explicit that a missing fee
+	// means unknown rather than zero.
+	bool fees_known = true;
+
 	// Get the txns
 	tx_array = json_object_get(gbt, "transactions");
 	if (!json_is_array(tx_array)) {
@@ -308,6 +355,9 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 		if (tdata->txn_count > 16383) {
 			DLOG_WARN("DATUM Gateway does not support blocks with more than 16383 transactions! %d txns in template. Truncating template to 16383 transactions.", (int)tdata->txn_count);
 			tdata->txn_count = 16383;
+			// The fees of the transactions dropped here are still inside
+			// coinbasevalue, so the tally no longer accounts for all of it.
+			fees_known = false;
 		}
 		for(i=0;i<tdata->txn_count;i++) {
 			json_t *tx = json_array_get(tx_array, i);
@@ -344,7 +394,13 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 			hex_to_bin_le(tdata->txns[i].hash_hex, tdata->txns[i].hash_bin);
 			
 			// fee
-			tdata->txns[i].fee_sats = json_integer_value(json_object_get(tx, "fee"));
+			jval = json_object_get(tx, "fee");
+			if (!json_is_integer(jval) || json_integer_value(jval) < 0) {
+				fees_known = false;
+				tdata->txns[i].fee_sats = 0;
+			} else {
+				tdata->txns[i].fee_sats = json_integer_value(jval);
+			}
 			
 			// sigops
 			tdata->txns[i].sigops = json_integer_value(json_object_get(tx, "sigops"));
@@ -378,8 +434,12 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 			tdata->txn_total_weight+=tdata->txns[i].weight;
 			tdata->txn_total_size+=tdata->txns[i].size;
 			tdata->txn_total_sigops+=tdata->txns[i].sigops;
+			tdata->txn_total_fee+=tdata->txns[i].fee_sats;
 		}
 	}
+	
+	tdata->block_subsidy = datum_template_subsidy_from_fees(
+		tdata->coinbasevalue, tdata->txn_total_fee, tdata->height, fees_known);
 	
 	return tdata;
 }

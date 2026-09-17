@@ -463,7 +463,7 @@ void generate_base_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool ne
 	
 	if (new_block) {
 		// Append the subsidy-only payout to the subsidy_only_coinbase
-		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(block_reward(s->height))); // subsidy calc for height
+		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(s->block_subsidy)); // subsidy for this template
 		memcpy(&s->subsidy_only_coinbase.coinb2[j+16], &s->coinbase[0].coinb2[j+16], k-j-16);
 		sprintf(&s->subsidy_only_coinbase.coinb2[k], "00000000");
 	}
@@ -669,7 +669,7 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 	
 	if (empty_only) {
 		// Append the subsidy-only payout to the subsidy_only_coinbase
-		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(block_reward(s->height))); // subsidy calc for height
+		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(s->block_subsidy)); // subsidy for this template
 		memcpy(&s->subsidy_only_coinbase.coinb2[j+16], &s->coinbase[0].coinb2[j+16], k-j-16);
 		sprintf(&s->subsidy_only_coinbase.coinb2[k], "00000000");
 	}

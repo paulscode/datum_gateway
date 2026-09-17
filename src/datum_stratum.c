@@ -2256,6 +2256,7 @@ void update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, i
 	
 	// Set the coinbase value of this job based on the template
 	s->coinbase_value = block_template->coinbasevalue;
+	s->block_subsidy = datum_template_block_subsidy(block_template);
 	s->height = block_template->height;
 	s->block_template = block_template;
 	

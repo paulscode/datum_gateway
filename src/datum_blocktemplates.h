@@ -184,6 +184,14 @@ typedef struct {
 	uint32_t	txn_total_weight;
 	uint32_t	txn_total_size;
 	uint32_t	txn_total_sigops;
+	uint64_t	txn_total_fee;
+
+	// The block subsidy alone, without fees, which is the entire value a block
+	// carrying nothing but its coinbase is allowed to pay. Taken from this
+	// template rather than recomputed from the height, because the halving
+	// interval is a chain parameter and the Gateway does not know which chain it
+	// is on. See datum_template_block_subsidy().
+	uint64_t	block_subsidy;
 	
 	T_DATUM_TEMPLATE_TXN *txns;
 	uint32_t	txn_data_offset;
@@ -197,6 +205,11 @@ extern const char *datum_blocktemplates_error;
 
 int datum_template_init(void);
 bool datum_gbt_rules_want_blake2b(json_t *gbt);
+uint64_t datum_template_block_subsidy(const T_DATUM_TEMPLATE_DATA *tdata);
+// Exposed rather than kept static so the derivation can be tested on its own: it is
+// the one piece of this that decides a coinbase amount, and getting it wrong in the
+// generous direction costs a whole block.
+uint64_t datum_template_subsidy_from_fees(uint64_t coinbasevalue, uint64_t total_fee, uint32_t height, bool fees_known);
 T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt);
 bool datum_blocktemplates_abw_ready(T_DATUM_TEMPLATE_DATA *block_template,
 	bool datum_active, bool abw_required);

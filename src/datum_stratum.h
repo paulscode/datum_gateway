@@ -163,6 +163,10 @@ typedef struct T_DATUM_STRATUM_JOB {
 	int target_pot_index; // where in coinb1 do we put our per-user vardiff pot value?
 	
 	uint64_t coinbase_value;
+	// The subsidy alone, without fees: what a block carrying only its coinbase may
+	// pay. Snapshotted from the template beside coinbase_value, rather than read
+	// from the template later, so the two always describe the same template.
+	uint64_t block_subsidy;
 	uint64_t height;
 	uint16_t enprefix;
 	
