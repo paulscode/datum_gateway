@@ -98,6 +98,10 @@
 				<h2>Stratum Server Info</h2>
 				<table>
 					<tr>
+						<td class="label">Point Your Miner At:</td>
+						<td><span id="stratum_endpoint">port ${STRATUM_LISTEN_PORT}</span><span id="stratum_endpoint_note" class="leading_zeros"></span></td>
+					</tr>
+					<tr>
 						<td class="label">Active Threads:</td>
 						<td>${STRATUM_ACTIVE_THREADS}</td>
 					</tr>
@@ -185,5 +189,25 @@
 		</div>
 	</div>
 	<p class="note">Note: This page does not automatically refresh</p>
+	<script>
+	(function () {
+		var port = "${STRATUM_LISTEN_PORT}";
+		var host = window.location.hostname;
+		var out = document.getElementById("stratum_endpoint");
+		var note = document.getElementById("stratum_endpoint_note");
+		if (!out || !host) return;
+		var isIPv4 = /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/.test(host);
+		var isIPv6 = host.indexOf(":") !== -1;
+		out.textContent = "stratum+tcp://" + (isIPv6 ? "[" + host + "]" : host) + ":" + port;
+		if (!isIPv4 && !isIPv6) {
+			// Mining firmware generally cannot resolve a name like umbrel.local,
+			// so saying so here saves a round of "it will not connect" that has
+			// nothing to do with the Gateway.
+			note.textContent = " \u2014 that is the name you used to reach this page. " +
+				"Most mining hardware cannot look up a name, so use this device's " +
+				"IP address instead.";
+		}
+	})();
+	</script>
 </body>
 </html>
