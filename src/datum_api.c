@@ -183,6 +183,31 @@ void datum_api_var_DATUM_POOL_PUBKEY(char *buffer, size_t buffer_size, const T_D
 void datum_api_var_STRATUM_LISTEN_PORT(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
 	snprintf(buffer, buffer_size, "%d", datum_config.stratum_v1_listen_port);
 }
+
+// Where to point a miner. When stratum.advertised_host is set - on Umbrel the
+// app's pre-start hook fills it in, because it runs on the host and can see the
+// address the host answers on - this is the whole endpoint and the page needs no
+// help. Otherwise it is the port alone, and the page fills the host in from the
+// address you opened it with.
+void datum_api_var_STRATUM_ENDPOINT(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
+	const char * const host = datum_config.stratum_v1_advertised_host;
+	if (!host[0]) {
+		snprintf(buffer, buffer_size, "port %d", datum_config.stratum_v1_listen_port);
+		return;
+	}
+	// An IPv6 literal needs brackets before a port can be appended to it. The
+	// config parser has already restricted this to hostname and IP characters.
+	if (strchr(host, ':')) {
+		snprintf(buffer, buffer_size, "stratum+tcp://[%s]:%d", host, datum_config.stratum_v1_listen_port);
+	} else {
+		snprintf(buffer, buffer_size, "stratum+tcp://%s:%d", host, datum_config.stratum_v1_listen_port);
+	}
+}
+
+// Whether the row above is already the answer, so the page leaves it alone.
+void datum_api_var_STRATUM_ENDPOINT_CONFIGURED(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
+	snprintf(buffer, buffer_size, "%d", datum_config.stratum_v1_advertised_host[0] ? 1 : 0);
+}
 void datum_api_var_STRATUM_ACTIVE_THREADS(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
 	snprintf(buffer, buffer_size, "%d", vardata->STRATUM_ACTIVE_THREADS);
 }
@@ -277,6 +302,8 @@ DATUM_API_VarEntry var_entries[] = {
 	{"DATUM_PROCESS_UPTIME", datum_api_var_DATUM_PROCESS_UPTIME},
 	
 	{"STRATUM_LISTEN_PORT", datum_api_var_STRATUM_LISTEN_PORT},
+	{"STRATUM_ENDPOINT", datum_api_var_STRATUM_ENDPOINT},
+	{"STRATUM_ENDPOINT_CONFIGURED", datum_api_var_STRATUM_ENDPOINT_CONFIGURED},
 	{"STRATUM_ACTIVE_THREADS", datum_api_var_STRATUM_ACTIVE_THREADS},
 	{"STRATUM_TOTAL_CONNECTIONS", datum_api_var_STRATUM_TOTAL_CONNECTIONS},
 	{"STRATUM_TOTAL_SUBSCRIPTIONS", datum_api_var_STRATUM_TOTAL_SUBSCRIPTIONS},

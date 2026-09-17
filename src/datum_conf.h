@@ -126,6 +126,11 @@ typedef struct {
 	int stratum_v1_idle_timeout_no_share;
 	int stratum_v1_idle_timeout_max_last_work;
 	int stratum_v1_extranonce2_size;
+	// Address a miner on the LAN should point at, shown on the status page. The
+	// Gateway cannot discover this itself: it runs in a container whose own address
+	// is on a bridge network, and the address its host answers on is not visible
+	// from in there. So whoever does know writes it here.
+	char stratum_v1_advertised_host[128];
 	
 	void *stratum_username_mod;
 	
