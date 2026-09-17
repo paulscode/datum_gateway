@@ -113,6 +113,8 @@ const T_DATUM_CONFIG_ITEM datum_config_options[] = {
 		.required = false, .ptr = &datum_config.stratum_v1_idle_timeout_no_share, 	.default_int = 7200 },
 	{ .var_type = DATUM_CONF_INT, 		.category = "stratum", 		.name = "idle_timeout_max_last_work",	.description = "Seconds we allow a subscribed connection to be idle since its last accepted share? (0 disables)",
 		.required = false, .ptr = &datum_config.stratum_v1_idle_timeout_max_last_work, 	.default_int = 0 },
+	{ .var_type = DATUM_CONF_INT, 		.category = "stratum", 		.name = "extranonce2_size",			.description = "Bytes of the 12-byte hasher extranonce the miner varies: 8 normally, or 4 for firmware with a 32-bit nonce2 (Obelisk SC1)",
+		.required = false, .ptr = &datum_config.stratum_v1_extranonce2_size, 			.default_int = 8 },
 	{ .var_type = DATUM_CONF_USERNAME_MODS, .category = "stratum", .name = "username_modifiers", .description = "Modifiers to redirect some portion of shares to alternate usernames", .required = false, .ptr = &datum_config.stratum_username_mod, },
 	
 	// mining settings
@@ -628,6 +630,15 @@ int datum_read_config(const char *conffile) {
 	
 	if (datum_config.stratum_v1_share_stale_seconds > 150) {
 		DLOG_FATAL("Stratum server stratum.share_stale_seconds must not exceed 150 (suggest 120)");
+		return 0;
+	}
+	
+	// The hasher extranonce is a fixed 12 bytes and the session id needs 4 of them, so
+	// these are the only two splits that leave the session id whole. Rejected at
+	// startup rather than clamped: a gateway quietly serving a different split than
+	// the operator configured is how a whole farm ends up rejected H-not-zero.
+	if (datum_config.stratum_v1_extranonce2_size != 8 && datum_config.stratum_v1_extranonce2_size != 4) {
+		DLOG_FATAL("Stratum server stratum.extranonce2_size must be 8 or 4 (suggest 8)");
 		return 0;
 	}
 	

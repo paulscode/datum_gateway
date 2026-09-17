@@ -195,6 +195,16 @@
 				</div>
 				<div class="setting-row">
 					<div class="flex-row">
+						<label for="stratum_extranonce2_size" class="label">Extranonce2 size:</label>
+						<select name="stratum_extranonce2_size" id="stratum_extranonce2_size"${*ro}>
+							<option value="8"${selected:*extranonce2_size_is_8}${disabled:*ro}>8 bytes (every other miner)</option>
+							<option value="4"${selected:*extranonce2_size_is_4}${disabled:*ro}>4 bytes (Obelisk SC1 Gen 2)</option>
+						</select>
+					</div>
+					<label for="stratum_extranonce2_size" class="tip">How much of the extranonce a miner varies. Leave this at 8 unless you run firmware with a 32-bit extranonce2, such as the Obelisk SC1 Gen 2, which refuses work at 8. This applies to every miner on this gateway, not just one, and the gateway restarts so they all reconnect and pick it up.</label>
+				</div>
+				<div class="setting-row">
+					<div class="flex-row">
 						<label for="bitcoind_work_update_seconds" class="label">Typical interval between job updates:</label>
 						<input maxlength="3" name="bitcoind_work_update_seconds" id="bitcoind_work_update_seconds" value="${bitcoind_work_update_seconds}"${*ro}></input>
 					</div>

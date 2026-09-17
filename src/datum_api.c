@@ -1038,6 +1038,10 @@ size_t datum_api_fill_config_var(const char *var_start, const size_t var_name_le
 		val = (!datum_config.datum_pooled_mining_only) && datum_config.datum_pool_host[0];
 	} else if (var_name_len_2 == 21 && 0 == strncmp(var_start_2, "*reward_sharing_never", 21)) {
 		val = (!datum_config.datum_pooled_mining_only) && !datum_config.datum_pool_host[0];
+	} else if (var_name_len_2 == 22 && 0 == strncmp(var_start_2, "*extranonce2_size_is_4", 22)) {
+		val = (datum_config.stratum_v1_extranonce2_size == 4);
+	} else if (var_name_len_2 == 22 && 0 == strncmp(var_start_2, "*extranonce2_size_is_8", 22)) {
+		val = (datum_config.stratum_v1_extranonce2_size != 4);
 	} else if (var_name_len_2 == 34 && 0 == strncmp(var_start_2, "*mining_coinbase_tag_secondary_max", 34)) {
 		val = 88 - strlen(datum_config.mining_coinbase_tag_primary);
 		if (val > 60) val = 60;
@@ -1343,6 +1347,22 @@ bool datum_api_config_set(const char * const key, const char * const val, struct
 		datum_api_json_modify_new("datum", "pool_pubkey", json_string(val));
 		// TODO: apply change without restarting
 		// TODO: switch pools smoother (keep old connection alive for share submissions until those jobs expire)
+		status->need_restart = true;
+	} else if (0 == strcmp(key, "stratum_extranonce2_size")) {
+		// Only 8 and 4 leave the session id its 4 bytes of the 12-byte field, and the
+		// Gateway refuses to start on anything else, so anything else is refused here
+		// too rather than written to a config file that will not load next boot.
+		const int val_int = datum_atoi_strict(val, strlen(val));
+		if (val_int != 8 && val_int != 4) {
+			json_array_append_new(errors, json_string_nocheck("\"Extranonce2 size\" must be 8 or 4"));
+			return false;
+		}
+		if (val_int == datum_config.stratum_v1_extranonce2_size) return true;
+		datum_config.stratum_v1_extranonce2_size = val_int;
+		datum_api_json_modify_new("stratum", "extranonce2_size", json_integer(val_int));
+		// The split is negotiated at subscribe and held for the life of a connection,
+		// so miners already connected keep the old one. Restarting is what makes them
+		// all reconnect and pick this up; without it the setting appears to do nothing.
 		status->need_restart = true;
 	} else if (0 == strcmp(key, "stratum_fingerprint_miners")) {
 		bool val_bool;

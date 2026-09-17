@@ -45,6 +45,7 @@
 void stratum_calculate_merkle_branches(T_DATUM_STRATUM_JOB *s);
 void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick);
 int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj);
+int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj);
 
 static void datum_blake2b_refresh_time_offset_tests(void) {
 	T_DATUM_TEMPLATE_DATA tdata;
@@ -198,6 +199,250 @@ static void datum_blake2b_h_not_zero_tests(void) {
 	datum_test(!memcmp(client.w_buffer, expected, strlen(expected)));
 	
 	global_cur_stratum_jobs[0] = saved_job;
+}
+
+// A share that reaches the H-not-zero gate and passes it stops one check later, at
+// time-too-old, because the job below sets mintime above the time on its wire. That is
+// far enough to tell "the gateway rebuilt the root the miner hashed" from "it didn't",
+// and it keeps the test clear of block submission and of the threadpool state the
+// checks after it read.
+static const char datum_blake2b_share_passed_gate[] =
+	"{\"error\":[21,\"time-too-old\",null],\"id\":7,\"result\":null}\n";
+static const char datum_blake2b_share_h_not_zero[] =
+	"{\"error\":[23,\"H-not-zero\",null],\"id\":7,\"result\":null}\n";
+
+static void datum_blake2b_extranonce2_job(T_DATUM_STRATUM_JOB *job, T_DATUM_TEMPLATE_DATA *tdata) {
+	memset(job, 0, sizeof(*job));
+	memset(tdata, 0, sizeof(*tdata));
+	job->block_template = tdata;
+	job->target_pot_index = 0;
+	job->coinbase[0].coinb1_len = 1;
+	job->coinbase[0].coinb1_bin[0] = 0xff;
+	tdata->abw_enabled = true;
+	tdata->abw_assignment_id = 1;
+	tdata->mintime = 1;
+	datum_test(datum_blake2b_xor_key_hash(tdata->xor_key_hash,
+		(const unsigned char[16]){0}));
+	strcpy(job->job_id, "0000000000c0de00");
+}
+
+static void datum_blake2b_extranonce2_submit(T_DATUM_CLIENT_DATA *client,
+	const char *extranonce2, const char *nonce, const char *expected) {
+	char submit[256];
+	snprintf(submit, sizeof(submit),
+		"{\"id\":7,\"method\":\"mining.submit\",\"params\":["
+		"\"miner\",\"0000000000c0de00\",\"%s\",\"0000000000000000\",\"%s\"]}",
+		extranonce2, nonce);
+	client->out_buf = 0;
+	datum_test(datum_stratum_v1_socket_thread_client_cmd(client, submit) == 0);
+	datum_test(client->out_buf == (int)strlen(expected));
+	datum_test(!memcmp(client->w_buffer, expected, strlen(expected)));
+}
+
+// Firmware like the Obelisk SC1 Gen 2 runs a 32-bit nonce2 inside the 8-byte
+// extranonce2 this dialect negotiates. It hashes its work root over the value
+// zero-padded to 8 bytes, but hex-encodes 8 bytes out of a 4-byte variable, so the high
+// 4 bytes on the wire are stack garbage. Read literally they rebuild a different root
+// and every share comes back H-not-zero.
+//
+// Every share here submits the same extranonce2, "deadbeefcafef00d". They differ only
+// in which reading of it their nonce was mined against, which is what makes them able
+// to tell the two readings apart. Each nonce was found by searching for a BLAKE2b work
+// hash with four leading zero bytes against this exact job - roughly 2^32 hashes. To
+// regenerate one: build the work root with datum_blake2b_work_root() over the reading
+// you want, then search nonce8 through datum_blake2b_build_work_header() and
+// datum_blake2b_pow_hash_le() until upk_u32le(share_hash, 28) is zero. The job's
+// commitment is f3c2fb50a9704f7fdafa21f9d494bd32089a75b162f8296912c8c7e44712f9c8.
+static void datum_blake2b_extranonce2_zero_extend_tests(void) {
+	// mined against extranonce 00000000 deadbeef 00000000 - the zero-extended reading
+	static const char nonce_32bit[] = "608fa80000000006";
+	// mined against extranonce 00000000 deadbeef cafef00d - all 8 bytes meant
+	static const char nonce_64bit[] = "edbf190800000009";
+	T_DATUM_CLIENT_DATA client = {0};
+	T_DATUM_MINER_DATA miner = {0};
+	T_DATUM_STRATUM_JOB job;
+	T_DATUM_TEMPLATE_DATA tdata;
+	T_DATUM_STRATUM_JOB * const saved_job = global_cur_stratum_jobs[0];
+
+	datum_blake2b_extranonce2_job(&job, &tdata);
+	client.app_client_data = &miner;
+	miner.stratum_job_diffs[0] = 1;
+	global_cur_stratum_jobs[0] = &job;
+
+	// The SC1 case: the share only reconstructs once the high 4 bytes are zeroed.
+	// Before the fallback existed this was the H-not-zero frame.
+	datum_blake2b_extranonce2_submit(&client, "deadbeefcafef00d", nonce_32bit,
+		datum_blake2b_share_passed_gate);
+	datum_test(miner.extranonce2_zero_extended_shares == 1);
+	datum_test(!miner.extranonce2_64bit);
+
+	// and it keeps working, rather than being a one-off rescue.
+	datum_blake2b_extranonce2_submit(&client, "deadbeefcafef00d", nonce_32bit,
+		datum_blake2b_share_passed_gate);
+	datum_test(miner.extranonce2_zero_extended_shares == 2);
+
+	// A miner that sends the same value with the high bytes already zero is the same
+	// share, so it passes as submitted and costs no second hash. It is also no evidence
+	// either way about how wide its nonce2 is, so nothing is latched.
+	datum_blake2b_extranonce2_submit(&client, "deadbeef00000000", nonce_32bit,
+		datum_blake2b_share_passed_gate);
+	datum_test(miner.extranonce2_zero_extended_shares == 2);
+	datum_test(!miner.extranonce2_64bit);
+
+	// A miner that means all 8 bytes passes on the first reading, so the fallback never
+	// runs for it. This is the case that must not regress: it is every device already
+	// mining against this gateway.
+	{
+		T_DATUM_CLIENT_DATA client64 = {0};
+		T_DATUM_MINER_DATA miner64 = {0};
+		client64.app_client_data = &miner64;
+		miner64.stratum_job_diffs[0] = 1;
+
+		datum_blake2b_extranonce2_submit(&client64, "deadbeefcafef00d", nonce_64bit,
+			datum_blake2b_share_passed_gate);
+		datum_test(miner64.extranonce2_zero_extended_shares == 0);
+		datum_test(miner64.extranonce2_64bit);
+
+		// Having proven it means all 8 bytes, it is never second-guessed again: the
+		// share that the fallback would have rescued is rejected instead. Without the
+		// latch, a 64-bit miner's bad share could be silently reinterpreted as a
+		// different, good one.
+		datum_blake2b_extranonce2_submit(&client64, "deadbeefcafef00d", nonce_32bit,
+			datum_blake2b_share_h_not_zero);
+		datum_test(miner64.extranonce2_zero_extended_shares == 0);
+	}
+
+	// A share that is wrong under both readings is still rejected.
+	datum_blake2b_extranonce2_submit(&client, "deadbeefcafef00d", "0123456789abcdef",
+		datum_blake2b_share_h_not_zero);
+	datum_test(miner.extranonce2_zero_extended_shares == 2);
+
+	global_cur_stratum_jobs[0] = saved_job;
+}
+
+// The decision on its own, away from the hashing: which submissions have a second
+// reading worth trying at all.
+static void datum_stratum_extranonce2_zero_extend_unit_tests(void) {
+	T_DATUM_MINER_DATA m = {0};
+	unsigned char en[12];
+
+	// Garbage in the high 4 bytes is the case this exists for.
+	memset(en, 0, sizeof(en));
+	memcpy(&en[4], "\xde\xad\xbe\xef\xca\xfe\xf0\x0d", 8);
+	datum_test(datum_stratum_extranonce2_zero_extend(&m, en));
+	datum_test(!upk_u32le(en, 8));
+	datum_test(upk_u32le(en, 4) == upk_u32le((const unsigned char *)"\xde\xad\xbe\xef", 0));
+
+	// Already zero: both readings are the same share, so there is no retry to make.
+	datum_test(!datum_stratum_extranonce2_zero_extend(&m, en));
+
+	// A client that has proven it means all 8 bytes is never reinterpreted.
+	memcpy(&en[4], "\xde\xad\xbe\xef\xca\xfe\xf0\x0d", 8);
+	m.extranonce2_64bit = true;
+	datum_test(!datum_stratum_extranonce2_zero_extend(&m, en));
+	datum_test(upk_u32le(en, 8) != 0);
+
+	// No client at all is the generic reading, used by nothing today but harmless.
+	datum_test(datum_stratum_extranonce2_zero_extend(NULL, en));
+	datum_test(!upk_u32le(en, 8));
+	datum_test(!datum_stratum_extranonce2_zero_extend(&m, NULL));
+}
+
+// Firmware with a hardcoded 32-bit nonce2 rejects the 8-byte extranonce2 this dialect
+// normally advertises, so stratum.extranonce2_size lets an operator move the split to
+// 8/4 instead. The hasher extranonce stays 12 bytes and the leaf stays 52: the session
+// id is padded out to 8 rather than the field being shortened, so the miner
+// concatenates coinb1, extranonce1 and extranonce2 exactly as before and arrives at the
+// same bytes. What changes is only how much of them it gets to vary.
+static void datum_stratum_extranonce2_size_tests(void) {
+	// mined against extranonce 00000000 00000000 deadbeef - the 8/4 split
+	static const char nonce_4byte[] = "a356ce0000000001";
+	// the 4/8 split's own vector, from the tests above
+	static const char nonce_32bit[] = "608fa80000000006";
+	const int saved_size = datum_config.stratum_v1_extranonce2_size;
+	T_DATUM_MINER_DATA * const m = calloc(1, sizeof(T_DATUM_MINER_DATA));
+	T_DATUM_STRATUM_THREADPOOL_DATA * const sd = calloc(1, sizeof(T_DATUM_STRATUM_THREADPOOL_DATA));
+	T_DATUM_CLIENT_DATA * const c = calloc(1, sizeof(T_DATUM_CLIENT_DATA));
+	T_DATUM_THREAD_DATA * const t = calloc(1, sizeof(T_DATUM_THREAD_DATA));
+	T_DATUM_STRATUM_JOB * const job = calloc(1, sizeof(T_DATUM_STRATUM_JOB));
+	T_DATUM_TEMPLATE_DATA tdata;
+	T_DATUM_STRATUM_JOB * const saved_job = global_cur_stratum_jobs[0];
+	assert(m && sd && c && t && job);
+
+	m->sdata = sd;
+	c->app_client_data = m;
+	c->datum_thread = t;
+	c->cid = 1;
+	t->app_thread_data = sd;
+
+	// The default split is the one every device already mining against this gateway
+	// was told, down to the byte.
+	datum_config.stratum_v1_extranonce2_size = 8;
+	datum_test(client_mining_subscribe(c, 1, NULL) == 0);
+	datum_test(m->extranonce2_size == 8);
+	datum_test(strstr(c->w_buffer, "\"b10cf00c\",8]}") != NULL);
+
+	// Moving the split pads the session id out to 8 bytes rather than shortening the
+	// 12-byte field, which is what keeps the miner's leaf 52 bytes long.
+	memset(c->w_buffer, 0, sizeof(c->w_buffer));
+	c->out_buf = 0;
+	m->subscribed = false;
+	datum_config.stratum_v1_extranonce2_size = 4;
+	datum_test(client_mining_subscribe(c, 1, NULL) == 0);
+	datum_test(m->extranonce2_size == 4);
+	datum_test(strstr(c->w_buffer, "\"b10cf00c00000000\",4]}") != NULL);
+
+	// The session id occupies the first 4 bytes of the hasher extranonce, and the
+	// vectors below were mined against a zero one. A real subscribe just handed this
+	// connection a real session id, so put it back.
+	m->sid = 0;
+	m->sid_inv = 0;
+
+	// A share under the 8/4 split reconstructs from the low 4 bytes of the field.
+	datum_blake2b_extranonce2_job(job, &tdata);
+	global_cur_stratum_jobs[0] = job;
+	m->stratum_job_diffs[0] = 1;
+	datum_blake2b_extranonce2_submit(c, "deadbeef", nonce_4byte,
+		datum_blake2b_share_passed_gate);
+
+	// The zero-extension fallback is for the other split only: here the high 4 bytes
+	// are the gateway's own padding, and the miner's value sits below them. Nor is a
+	// non-zero value in them evidence that this client means all 8, because under this
+	// split they are all it was given.
+	datum_test(m->extranonce2_zero_extended_shares == 0);
+	datum_test(!m->extranonce2_64bit);
+	datum_test(!datum_stratum_extranonce2_zero_extend(m,
+		(unsigned char[12]){0,0,0,0, 0,0,0,0, 0xde,0xad,0xbe,0xef}));
+
+	// A miner that ignores the advertised size and sends the other width did not hash
+	// the leaf this gateway would rebuild, so it is refused rather than guessed at.
+	datum_blake2b_extranonce2_submit(c, "deadbeefcafef00d", nonce_32bit,
+		"{\"error\":[20,\"unknown-work\",null],\"id\":7,\"result\":null}\n");
+
+	// and the same refusal the other way round, on a connection told 8.
+	m->extranonce2_size = 8;
+	datum_blake2b_extranonce2_submit(c, "deadbeef", nonce_4byte,
+		"{\"error\":[20,\"unknown-work\",null],\"id\":7,\"result\":null}\n");
+
+	// A connection that never subscribed is read as the default split, so the paths
+	// that submit without one do not change meaning.
+	{
+		T_DATUM_CLIENT_DATA unsubscribed = {0};
+		T_DATUM_MINER_DATA never = {0};
+		unsubscribed.app_client_data = &never;
+		never.stratum_job_diffs[0] = 1;
+		datum_test(never.extranonce2_size == 0);
+		datum_blake2b_extranonce2_submit(&unsubscribed, "deadbeefcafef00d", nonce_32bit,
+			datum_blake2b_share_passed_gate);
+	}
+
+	global_cur_stratum_jobs[0] = saved_job;
+	datum_config.stratum_v1_extranonce2_size = saved_size;
+	free(job);
+	free(t);
+	free(c);
+	free(sd);
+	free(m);
 }
 
 static void datum_blake2b_coinbase_selection_tests(void) {
@@ -761,6 +1006,9 @@ void datum_stratum_tests(void) {
 	datum_stratum_string_request_id_tests();
 	datum_blake2b_coinbase_selection_tests();
 	datum_blake2b_h_not_zero_tests();
+	datum_stratum_extranonce2_zero_extend_unit_tests();
+	datum_blake2b_extranonce2_zero_extend_tests();
+	datum_stratum_extranonce2_size_tests();
 	datum_blake2b_client_pot_commitment_tests();
 	datum_blake2b_unmasked_block_tests();
 	datum_stratum_abw_block_request_tests();

@@ -983,6 +983,38 @@ static void stratum_note_share(T_DATUM_MINER_DATA *m, bool accepted, uint64_t di
 	}
 }
 
+// Some firmware runs a 32-bit extranonce2 inside the 8-byte field this dialect
+// negotiates. It hashes its work root over the value zero-padded to 8 bytes, but
+// hex-encodes 8 bytes out of a 4-byte variable, so the high 4 bytes on the wire are
+// whatever happened to sit next to it in memory. The root the gateway rebuilds then
+// disagrees with the one the miner hashed, and every share is rejected H-not-zero.
+// The Obelisk SC1 Gen 2 (ob2 cgminer-sia) is the known case.
+//
+// Zeroing those bytes reproduces the leaf the miner actually hashed. This is a
+// fallback rather than a rule: the caller tries the extranonce2 exactly as submitted
+// first and only comes here once that has already failed the gate, so a miner that
+// means all 8 bytes is never reinterpreted. Returns false when there is nothing to
+// try, which is also what keeps the second hash off the hot path for everyone else.
+bool datum_stratum_extranonce2_zero_extend(const T_DATUM_MINER_DATA *m, unsigned char *extranonce_bin) {
+	if (!extranonce_bin) return false;
+
+	// A client that has already passed the gate with meaningful high bytes means all
+	// 8 of them, so its shares are never second-guessed again on this connection.
+	if (m && m->extranonce2_64bit) return false;
+
+	// Only the 8-byte split can hide a 32-bit nonce2 in its high bytes. Where the
+	// split is 4 those bytes are the gateway's own padding and the miner's value sits
+	// below them, so there is nothing here to reinterpret.
+	if (m && m->extranonce2_size && m->extranonce2_size != 8) return false;
+
+	// Already zero, so both readings are the same share and the retry would be a
+	// second identical hash.
+	if (!upk_u32le(extranonce_bin, 8)) return false;
+
+	pk_u32le(extranonce_bin, 8, 0);
+	return true;
+}
+
 int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj) {
 	// {"params": ["username", "job", "extranonce2", "time", "nonce"], "id": 1, "method": "mining.submit"}
 	// 0 = username
@@ -1113,13 +1145,19 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		stratum_note_share(m, false, job_diff);
 		return 0;
 	}
-	if (strlen(extranonce2_s) != 16) {
+	// Whatever split this connection was given at subscribe, and only that one: a miner
+	// sending the other width did not hash the leaf this gateway is about to rebuild.
+	const unsigned int en2_size = m->extranonce2_size ? m->extranonce2_size : 8;
+	if (strlen(extranonce2_s) != (size_t)(en2_size << 1)) {
 		send_unknown_work_error(c, id);
 		stratum_note_share(m, false, job_diff);
 		return 0;
 	}
-	for(i=0;i<8;i++) {
-		extranonce_bin[i+4] = hex2bin_uchar(&extranonce2_s[i<<1]);
+	// Session id, then the gateway's own zero padding when the split moved, then the
+	// miner's extranonce2 in the low bytes - the same 12 bytes the miner concatenated.
+	memset(&extranonce_bin[4], 0, 8);
+	for(i=0;i<(int)en2_size;i++) {
+		extranonce_bin[i + 12 - en2_size] = hex2bin_uchar(&extranonce2_s[i<<1]);
 	}
 	
 	// need to build the full coinbase txn
@@ -1231,24 +1269,46 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		stratum_note_share(m, false, job_diff);
 		return 0;
 	}
-	if (!datum_blake2b_work_root(root, blake2b_commitment, extranonce_bin)) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, false, job_diff);
-		return 0;
+	// The extranonce2 is read exactly as submitted first. Only if that fails the gate
+	// is it retried zero-extended, for the 32-bit-nonce2 firmware described above.
+	// Everything downstream - the coinbase, the dupe key, the assembled block and the
+	// DATUM submission - reads extranonce_bin, so correcting it here corrects all of
+	// them together.
+	bool zero_extended = false;
+	for (;;) {
+		if (!datum_blake2b_work_root(root, blake2b_commitment, extranonce_bin)) {
+			send_unknown_work_error(c, id);
+			stratum_note_share(m, false, job_diff);
+			return 0;
+		}
+		datum_blake2b_build_work_header(work, job->prevhash_bin, nonce8, ntime8, root);
+		memcpy(block_header, work, 80);
+		if (!datum_blake2b_pow_hash_le(share_hash, work, (const unsigned char[16]){0}, 0)) {
+			send_unknown_work_error(c, id);
+			stratum_note_share(m, false, job_diff);
+			return 0;
+		}
+		if (upk_u32le(share_hash, 28) == 0) break;
+		if (zero_extended || !datum_stratum_extranonce2_zero_extend(m, extranonce_bin)) {
+			send_rejected_hnotzero_error(c, id);
+			stratum_note_share(m, false, job_diff);
+			return 0;
+		}
+		zero_extended = true;
 	}
-	datum_blake2b_build_work_header(work, job->prevhash_bin, nonce8, ntime8, root);
-	memcpy(block_header, work, 80);
-	if (!datum_blake2b_pow_hash_le(share_hash, work, (const unsigned char[16]){0}, 0)) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, false, job_diff);
-		return 0;
+	if (zero_extended) {
+		++m->extranonce2_zero_extended_shares;
+		if (m->extranonce2_zero_extended_shares == 1) {
+			DLOG_INFO("Client %s/%s submits a 32-bit extranonce2 in an 8-byte field; zero-extending it for this connection.", c->rem_host, m->useragent);
+		}
+	} else if (en2_size == 8 && upk_u32le(extranonce_bin, 8)) {
+		// Passed as submitted with the high 4 bytes meaning something, so this client
+		// means all 8 and must never be reinterpreted. Only under the 8-byte split:
+		// where the split is 4 those bytes are the miner's whole extranonce2 and say
+		// nothing about how wide its nonce2 is.
+		m->extranonce2_64bit = true;
 	}
-	if (upk_u32le(share_hash, 28) != 0) {
-		send_rejected_hnotzero_error(c, id);
-		stratum_note_share(m, false, job_diff);
-		return 0;
-	}
-	
+
 	username = json_array_get(params_obj, 0);
 	if (!username) {
 		username_s = (const char *)"NULL";
@@ -1870,10 +1930,25 @@ int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	// store the inverted endian version for faster share checking later
 	m->sid_inv = ((sid>>24)&0xff) | (((sid>>16)&0xff)<<8) | (((sid>>8)&0xff)<<16) | ((sid&0xff)<<24);
 	
+	// The split is negotiated once, here, and held for the life of the connection. The
+	// config can be reloaded while miners are connected, and a client told one split
+	// must never have its shares read under another.
+	m->extranonce2_size = (datum_config.stratum_v1_extranonce2_size == 4) ? 4 : 8;
+
 	// tell them about all of this
 	char idbuf[160];
 	stratum_rpc_id_text(c, id, idbuf, sizeof(idbuf));
-	snprintf(s, sizeof(s), "{\"error\":null,\"id\":%s,\"result\":[[[\"mining.notify\",\"%8.8x1\"],[\"mining.set_difficulty\",\"%8.8x2\"]],\"%8.8x\",8]}\n", idbuf, sid, sid, sid);
+	if (m->extranonce2_size == 4) {
+		// The hasher extranonce is a fixed 12 bytes and the work root is always hashed
+		// over a 52-byte leaf, so a 4-byte extranonce2 is served by padding the session
+		// id out to 8 rather than by shortening the field. The miner concatenates
+		// coinb1, extranonce1 and extranonce2 exactly as before and arrives at the same
+		// 52 bytes; only the part it is free to vary gets smaller. That is what lets
+		// firmware with a hardcoded 32-bit nonce2 mine this chain unmodified.
+		snprintf(s, sizeof(s), "{\"error\":null,\"id\":%s,\"result\":[[[\"mining.notify\",\"%8.8x1\"],[\"mining.set_difficulty\",\"%8.8x2\"]],\"%8.8x00000000\",4]}\n", idbuf, sid, sid, sid);
+	} else {
+		snprintf(s, sizeof(s), "{\"error\":null,\"id\":%s,\"result\":[[[\"mining.notify\",\"%8.8x1\"],[\"mining.set_difficulty\",\"%8.8x2\"]],\"%8.8x\",8]}\n", idbuf, sid, sid, sid);
+	}
 	stratum_rpc_id_clear(c);
 	datum_socket_send_string_to_client(c, s);
 	

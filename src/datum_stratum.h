@@ -267,6 +267,20 @@ typedef struct {
 	// Set by "fd=" instead of "d=": hold the difficulty exactly, no vardiff at all.
 	bool client_fixed_diff;
 
+	// Bytes of the 12-byte hasher extranonce this client varies, 8 or 4, negotiated in
+	// its subscribe reply and held for the life of the connection. Zero means the
+	// client never subscribed, which is read as 8.
+	unsigned char extranonce2_size;
+
+	// This client has proven it means all 8 bytes of its extranonce2, by passing the
+	// h-not-zero gate on a share whose high 4 bytes were not zero. Latched, and never
+	// cleared: after that, its extranonce2 is taken exactly as submitted.
+	bool extranonce2_64bit;
+
+	// Shares from this client that only passed the gate once the high 4 bytes of the
+	// extranonce2 were zeroed. See datum_stratum_extranonce2_zero_extend().
+	uint64_t extranonce2_zero_extended_shares;
+
 	int last_sent_stratum_job_index;
 	
 	T_DATUM_STRATUM_USER_STATS stats;
@@ -280,6 +294,7 @@ extern T_DATUM_STRATUM_JOB *global_cur_stratum_jobs[MAX_STRATUM_JOBS];
 
 const char *datum_stratum_mod_username(const char *username_s, char *username_buf, size_t username_buf_sz, uint16_t share_rnd, const char *modname, size_t modname_len);
 void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw);
+bool datum_stratum_extranonce2_zero_extend(const T_DATUM_MINER_DATA *m, unsigned char *extranonce_bin);
 
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block);
 void update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, int job_state);
