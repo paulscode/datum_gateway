@@ -176,6 +176,13 @@ void datum_api_var_DATUM_POOL_DIFF(char *buffer, size_t buffer_size, const T_DAT
 void datum_api_var_DATUM_POOL_PUBKEY(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
 	snprintf(buffer, buffer_size, "%s", datum_config.datum_pool_pubkey);
 }
+// The port the Gateway is listening on, which is the port a miner connects to
+// wherever the container's port is published straight through - Umbrel maps
+// 23336 to 23336, StartOS asks for the same number outside as in. An operator who
+// remapped it in their own compose file is the exception, and the page says so.
+void datum_api_var_STRATUM_LISTEN_PORT(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
+	snprintf(buffer, buffer_size, "%d", datum_config.stratum_v1_listen_port);
+}
 void datum_api_var_STRATUM_ACTIVE_THREADS(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
 	snprintf(buffer, buffer_size, "%d", vardata->STRATUM_ACTIVE_THREADS);
 }
@@ -269,6 +276,7 @@ DATUM_API_VarEntry var_entries[] = {
 	{"DATUM_POOL_PUBKEY", datum_api_var_DATUM_POOL_PUBKEY},
 	{"DATUM_PROCESS_UPTIME", datum_api_var_DATUM_PROCESS_UPTIME},
 	
+	{"STRATUM_LISTEN_PORT", datum_api_var_STRATUM_LISTEN_PORT},
 	{"STRATUM_ACTIVE_THREADS", datum_api_var_STRATUM_ACTIVE_THREADS},
 	{"STRATUM_TOTAL_CONNECTIONS", datum_api_var_STRATUM_TOTAL_CONNECTIONS},
 	{"STRATUM_TOTAL_SUBSCRIPTIONS", datum_api_var_STRATUM_TOTAL_SUBSCRIPTIONS},
