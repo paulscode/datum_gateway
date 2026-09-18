@@ -105,6 +105,63 @@ void datum_api_var_STRATUM_SHARES_REJECTED(char *buffer, size_t buffer_size, con
 		__atomic_load_n(&stratum_client_rejected_share_count, __ATOMIC_RELAXED),
 		__atomic_load_n(&stratum_client_rejected_share_diff, __ATOMIC_RELAXED));
 }
+/*
+ * Which reasons the rejected total above is made of, worst first, listing only the reasons
+ * that have actually happened.
+ *
+ * A bare count of rejections does not say what to do about them. "duplicate" and
+ * "stale-work" and "extranonce2-size" are three unrelated faults with three unrelated
+ * fixes, and until now telling them apart meant reading the miner's own log, which the
+ * operator of a rented farm may not have. The names match the Stratum error strings the
+ * miners are sent, so the two line up.
+ */
+void datum_api_var_STRATUM_REJECT_REASONS(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
+	(void)vardata;
+	unsigned int order[DATUM_SHARE_OUTCOME_COUNT];
+	unsigned int n = 0;
+	uint64_t counts[DATUM_SHARE_OUTCOME_COUNT];
+
+	for (unsigned int i = DATUM_SHARE_ACCEPTED + 1; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		counts[i] = __atomic_load_n(&stratum_client_reject_reason_count[i], __ATOMIC_RELAXED);
+		if (counts[i]) order[n++] = i;
+	}
+
+	if (!n) {
+		snprintf(buffer, buffer_size, "None");
+		return;
+	}
+
+	// Descending by count. A handful of entries, so a plain insertion sort.
+	for (unsigned int i = 1; i < n; ++i) {
+		const unsigned int key = order[i];
+		int j = (int)i - 1;
+		while (j >= 0 && counts[order[j]] < counts[key]) {
+			order[j + 1] = order[j];
+			--j;
+		}
+		order[j + 1] = key;
+	}
+
+	// The substitution buffer is capped well below the worst case of every reason being
+	// present, so each entry is measured before it is written. A half-written reason name
+	// would read as a different reason, which is worse than saying there are more.
+	size_t at = 0;
+	for (unsigned int i = 0; i < n; ++i) {
+		char entry[64];
+		const int w = snprintf(entry, sizeof(entry), "%s%s %llu",
+			at ? ", " : "", datum_stratum_share_reject_name(order[i]),
+			(unsigned long long)counts[order[i]]);
+		if (w < 0) break;
+		// Room for this entry and for the ", ..." that would follow it
+		if (at + (size_t)w + 6 >= buffer_size) {
+			snprintf(&buffer[at], buffer_size - at, ", ...");
+			return;
+		}
+		memcpy(&buffer[at], entry, (size_t)w + 1);
+		at += (size_t)w;
+	}
+}
+
 void datum_api_var_DATUM_SHARES_ACCEPTED(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
 	(void)vardata;
 	if (!datum_config.datum_pool_host[0]) {
@@ -291,6 +348,7 @@ void datum_api_var_STRATUM_JOB_TXNCOUNT(char *buffer, size_t buffer_size, const 
 DATUM_API_VarEntry var_entries[] = {
 	{"STRATUM_SHARES_ACCEPTED", datum_api_var_STRATUM_SHARES_ACCEPTED},
 	{"STRATUM_SHARES_REJECTED", datum_api_var_STRATUM_SHARES_REJECTED},
+	{"STRATUM_REJECT_REASONS", datum_api_var_STRATUM_REJECT_REASONS},
 	{"DATUM_SHARES_ACCEPTED", datum_api_var_DATUM_SHARES_ACCEPTED},
 	{"DATUM_SHARES_REJECTED", datum_api_var_DATUM_SHARES_REJECTED},
 	{"DATUM_CONNECTION_STATUS", datum_api_var_DATUM_CONNECTION_STATUS},
@@ -958,7 +1016,7 @@ int datum_api_client_dashboard(struct MHD_Connection *connection) {
 		return MHD_YES;
 	}
 	
-	sz += snprintf(&output[sz], max_sz-1-sz, "<form action='/cmd' method='post'><input type='hidden' name='csrf' value='%s' /><TABLE><TR><TD><U>TID/CID</U></TD>  <TD><U>RemHost</U></TD>  <TD><U>Auth Username</U></TD> <TD><U>Subbed</U></TD> <TD><U>Last Accepted</U></TD> <TD><U>VDiff</U></TD> <TD><U>DiffA (A)</U></TD> <TD><U>DiffR (R)</U></TD> <TD><U>Hashrate (age)</U></TD> <TD><U>Coinbase</U></TD> <TD><U>UserAgent</U> </TD><TD><U>Command</U></TD></TR>", datum_config.api_csrf_token);
+	sz += snprintf(&output[sz], max_sz-1-sz, "<form action='/cmd' method='post'><input type='hidden' name='csrf' value='%s' /><TABLE><TR><TD><U>TID/CID</U></TD>  <TD><U>RemHost</U></TD>  <TD><U>Auth Username</U></TD> <TD><U>Subbed</U></TD> <TD><U>Last Accepted</U></TD> <TD><U>VDiff</U></TD> <TD><U>DiffA (A)</U></TD> <TD><U>DiffR (R)</U></TD> <TD><U>Last Reject</U></TD> <TD><U>Hashrate (age)</U></TD> <TD><U>Coinbase</U></TD> <TD><U>UserAgent</U> </TD><TD><U>Command</U></TD></TR>", datum_config.api_csrf_token);
 	
 	for (j = 0; j < max_threads; ++j) {
 		for(ii=0;ii<global_stratum_app->max_clients_thread;ii++) {
@@ -989,7 +1047,17 @@ int datum_api_client_dashboard(struct MHD_Connection *connection) {
 						hr = ((double)m->share_diff_rejected / (double)(m->share_diff_accepted + m->share_diff_rejected))*100.0;
 					}
 					sz += snprintf(&output[sz], max_sz-1-sz, "<TD>%"PRIu64" (%"PRIu64") %.2f%%</TD>", m->share_diff_rejected, m->share_count_rejected, hr);
-					
+
+					// Why this miner's last share was refused. The count beside it says how
+					// many, and on its own that cannot tell a miner on the wrong extranonce2
+					// size from one whose work has simply rotated away.
+					if (m->share_count_rejected) {
+						sz += snprintf(&output[sz], max_sz-1-sz, "<TD>%s</TD>", datum_stratum_share_reject_name(m->last_reject_reason));
+					} else {
+						sz += snprintf(&output[sz], max_sz-1-sz, "<TD>-</TD>");
+					}
+
+
 					astat = m->stats.active_index?0:1; // inverted
 					hr = 0.0;
 					if ((m->stats.last_swap_ms > 0) && (m->stats.diff_accepted[astat] > 0)) {
@@ -1014,7 +1082,7 @@ int datum_api_client_dashboard(struct MHD_Connection *connection) {
 					sz += strncpy_html_escape(&output[sz], m->useragent, max_sz-1-sz);
 					sz += snprintf(&output[sz], max_sz-1-sz, "</TD>");
 				} else {
-					sz += snprintf(&output[sz], max_sz-1-sz, "<TD COLSPAN=\"8\">Not Subscribed</TD>");
+					sz += snprintf(&output[sz], max_sz-1-sz, "<TD COLSPAN=\"9\">Not Subscribed</TD>");
 				}
 				
 				sz += snprintf(&output[sz], max_sz-1-sz, "<TD><button name='kill_client' value='%d_%d_%lu_%lu' onclick=\"sendPostRequest('/cmd', {cmd:'kill_client',tid:%d,cid:%d,t:%lu,id:%lu}); return false;\">Kick</button></TD></TR>", j, ii, (unsigned long)m->connect_tsms, (unsigned long)m->unique_id, j, ii, (unsigned long)m->connect_tsms, (unsigned long)m->unique_id);

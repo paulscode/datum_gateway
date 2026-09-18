@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "datum_api.h"
 #include "datum_jsonrpc.h"
 #include "datum_pow.h"
 #include "datum_stratum.h"
@@ -998,7 +999,77 @@ static void datum_stratum_client_vardiff_floor_tests(void) {
 	datum_config.stratum_v1_vardiff_target_shares_min = saved_shares_min;
 }
 
+/*
+ * The reject reasons an operator reads, and the breakdown they read them in.
+ *
+ * Both are only ever seen when something is already wrong, which is exactly when a wrong
+ * name or a truncated one sends someone after the wrong fault.
+ */
+void datum_api_var_STRATUM_REJECT_REASONS(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata);
+
+static void datum_stratum_reject_reason_tests(void) {
+	// Every reason names itself, and no two share a name
+	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		const char * const name = datum_stratum_share_reject_name(i);
+		datum_test(name != NULL && name[0] != '\0');
+		datum_test(strcmp(name, "unknown") != 0);
+		for (unsigned int j = i + 1; j < DATUM_SHARE_OUTCOME_COUNT; ++j) {
+			datum_test(strcmp(name, datum_stratum_share_reject_name(j)) != 0);
+		}
+	}
+	// Out of range says so rather than reading off the end of the table
+	datum_test(!strcmp(datum_stratum_share_reject_name(DATUM_SHARE_OUTCOME_COUNT), "unknown"));
+	datum_test(!strcmp(datum_stratum_share_reject_name(60000), "unknown"));
+
+	uint64_t saved[DATUM_SHARE_OUTCOME_COUNT];
+	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		saved[i] = stratum_client_reject_reason_count[i];
+		stratum_client_reject_reason_count[i] = 0;
+	}
+
+	char buf[256];
+
+	// Nothing rejected yet, which is what an operator with no problem sees
+	datum_api_var_STRATUM_REJECT_REASONS(buf, sizeof(buf), NULL);
+	datum_test(!strcmp(buf, "None"));
+
+	// Listed worst first, so the reason to chase is the one read first
+	stratum_client_reject_reason_count[DATUM_SHARE_REJECT_STALE_WORK] = 3;
+	stratum_client_reject_reason_count[DATUM_SHARE_REJECT_DUPLICATE] = 900;
+	stratum_client_reject_reason_count[DATUM_SHARE_REJECT_ABOVE_TARGET] = 40;
+	datum_api_var_STRATUM_REJECT_REASONS(buf, sizeof(buf), NULL);
+	datum_test(!strcmp(buf, "duplicate 900, high-hash 40, stale-work 3"));
+
+	// A reason that has not happened is not listed at all
+	datum_test(strstr(buf, "malformed") == NULL);
+
+	// Every reason at once, into a buffer too small to hold them, must not leave a half
+	// written name behind: "extranonce2-si" would read as a reason that does not exist.
+	for (unsigned int i = DATUM_SHARE_ACCEPTED + 1; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		stratum_client_reject_reason_count[i] = 18446744073709551615ULL;
+	}
+	char small[64];
+	memset(small, 0x7f, sizeof(small));
+	datum_api_var_STRATUM_REJECT_REASONS(small, sizeof(small), NULL);
+	datum_test(memchr(small, 0, sizeof(small)) != NULL); // terminated inside the buffer
+	datum_test(strlen(small) < sizeof(small));
+	datum_test(strstr(small, "...") != NULL); // said there were more rather than cutting one
+	for (unsigned int i = DATUM_SHARE_ACCEPTED + 1; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		const char * const name = datum_stratum_share_reject_name(i);
+		const char * const found = strstr(small, name);
+		if (found) {
+			// A name that appears must appear whole, with its count after it
+			datum_test(found[strlen(name)] == ' ');
+		}
+	}
+
+	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		stratum_client_reject_reason_count[i] = saved[i];
+	}
+}
+
 void datum_stratum_tests(void) {
+	datum_stratum_reject_reason_tests();
 	datum_stratum_password_opts_tests();
 	datum_stratum_client_vardiff_floor_tests();
 	datum_stratum_mod_username_tests();
