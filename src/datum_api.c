@@ -112,6 +112,47 @@ bool datum_api_var_STRATUM_SHARES_REJECTED(struct buf * const buf, const T_DATUM
 		__atomic_load_n(&stratum_client_rejected_share_count, __ATOMIC_RELAXED),
 		__atomic_load_n(&stratum_client_rejected_share_diff, __ATOMIC_RELAXED));
 }
+/*
+ * Which reasons the rejected total above is made of, worst first, listing only the reasons
+ * that have actually happened.
+ *
+ * A bare count of rejections does not say what to do about them. "duplicate" and
+ * "stale-work" and "extranonce2-size" are three unrelated faults with three unrelated
+ * fixes, and until now telling them apart meant reading the miner's own log, which the
+ * operator of a rented farm may not have. The names match the Stratum error strings the
+ * miners are sent, so the two line up.
+ */
+bool datum_api_var_STRATUM_REJECT_REASONS(struct buf * const buf, const T_DATUM_API_DASH_VARS *vardata) {
+	(void)vardata;
+	unsigned int order[DATUM_SHARE_OUTCOME_COUNT];
+	unsigned int n = 0;
+	uint64_t counts[DATUM_SHARE_OUTCOME_COUNT];
+
+	for (unsigned int i = DATUM_SHARE_ACCEPTED + 1; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		counts[i] = __atomic_load_n(&stratum_client_reject_reason_count[i], __ATOMIC_RELAXED);
+		if (counts[i]) order[n++] = i;
+	}
+
+	if (!n) return buf_strcat(buf, "None");
+
+	// Descending by count. A handful of entries, so a plain insertion sort.
+	for (unsigned int i = 1; i < n; ++i) {
+		const unsigned int key = order[i];
+		int j = (int)i - 1;
+		while (j >= 0 && counts[order[j]] < counts[key]) {
+			order[j + 1] = order[j];
+			--j;
+		}
+		order[j + 1] = key;
+	}
+
+	for (unsigned int i = 0; i < n; ++i) {
+		if (!buf_printf(buf, "%s%s %llu", i ? ", " : "", datum_stratum_share_reject_name(order[i]),
+			(unsigned long long)counts[order[i]])) return false;
+	}
+	return true;
+}
+
 bool datum_api_var_DATUM_SHARES_ACCEPTED(struct buf * const buf, const T_DATUM_API_DASH_VARS *vardata) {
 	(void)vardata;
 	if (!datum_config.datum_pool_host[0]) {
@@ -293,6 +334,7 @@ bool datum_api_var_STRATUM_JOB_TXNCOUNT(struct buf * const buf, const T_DATUM_AP
 DATUM_API_VarEntry var_entries[] = {
 	{"STRATUM_SHARES_ACCEPTED", datum_api_var_STRATUM_SHARES_ACCEPTED},
 	{"STRATUM_SHARES_REJECTED", datum_api_var_STRATUM_SHARES_REJECTED},
+	{"STRATUM_REJECT_REASONS", datum_api_var_STRATUM_REJECT_REASONS},
 	{"DATUM_SHARES_ACCEPTED", datum_api_var_DATUM_SHARES_ACCEPTED},
 	{"DATUM_SHARES_REJECTED", datum_api_var_DATUM_SHARES_REJECTED},
 	{"DATUM_CONNECTION_STATUS", datum_api_var_DATUM_CONNECTION_STATUS},
@@ -909,7 +951,7 @@ enum MHD_Result datum_api_client_dashboard(struct MHD_Connection *connection) {
 	
 	buf_strcat(&output, www_clients_top_html);
 	
-	buf_printf(&output, "<form action='/cmd' method='post'><input type='hidden' name='csrf' value='%s' /><TABLE><TR><TD><U>TID/CID</U></TD>  <TD><U>RemHost</U></TD>  <TD><U>Auth Username</U></TD> <TD><U>Subbed</U></TD> <TD><U>Last Accepted</U></TD> <TD><U>VDiff</U></TD> <TD><U>DiffA (A)</U></TD> <TD><U>DiffR (R)</U></TD> <TD><U>Hashrate (age)</U></TD> <TD><U>Coinbase</U></TD> <TD><U>UserAgent</U> </TD><TD><U>Command</U></TD></TR>", datum_config.api_csrf_token);
+	buf_printf(&output, "<form action='/cmd' method='post'><input type='hidden' name='csrf' value='%s' /><TABLE><TR><TD><U>TID/CID</U></TD>  <TD><U>RemHost</U></TD>  <TD><U>Auth Username</U></TD> <TD><U>Subbed</U></TD> <TD><U>Last Accepted</U></TD> <TD><U>VDiff</U></TD> <TD><U>DiffA (A)</U></TD> <TD><U>DiffR (R)</U></TD> <TD><U>Last Reject</U></TD> <TD><U>Hashrate (age)</U></TD> <TD><U>Coinbase</U></TD> <TD><U>UserAgent</U> </TD><TD><U>Command</U></TD></TR>", datum_config.api_csrf_token);
 	
 	for (j = 0; j < max_threads; ++j) {
 		for(ii=0;ii<global_stratum_app->max_clients_thread;ii++) {
@@ -946,6 +988,15 @@ enum MHD_Result datum_api_client_dashboard(struct MHD_Connection *connection) {
 					buf_datum_format_difficulty(&output, datum_pdiff_to_diff(m->share_diff_rejected));
 					buf_printf(&output, " (%"PRIu64") %.2f%%</TD>", m->share_count_rejected, hr);
 					
+					// Why this miner's last share was refused. The count beside it says how
+					// many, and on its own that cannot tell a miner on the wrong extranonce2
+					// size from one whose work has simply rotated away.
+					if (m->share_count_rejected) {
+						buf_printf(&output, "<TD>%s</TD>", datum_stratum_share_reject_name(m->last_reject_reason));
+					} else {
+						buf_strcat(&output, "<TD>-</TD>");
+					}
+					
 					astat = m->stats.active_index?0:1; // inverted
 					hr = 0.0;
 					if ((m->stats.last_swap_ms > 0) && (m->stats.diff_accepted[astat] > 0)) {
@@ -970,7 +1021,7 @@ enum MHD_Result datum_api_client_dashboard(struct MHD_Connection *connection) {
 					buf_strcat_html_escape(&output, m->useragent);
 					buf_strcat(&output, "</TD>");
 				} else {
-					buf_strcat(&output, "<TD COLSPAN=\"8\">Not Subscribed</TD>");
+					buf_strcat(&output, "<TD COLSPAN=\"9\">Not Subscribed</TD>");
 				}
 				
 				buf_printf(&output, "<TD><button name='kill_client' value='%d_%d_%lu_%lu' onclick=\"sendPostRequest('/cmd', {cmd:'kill_client',tid:%d,cid:%d,t:%lu,id:%lu}); return false;\">Kick</button></TD></TR>", j, ii, (unsigned long)m->connect_tsms, (unsigned long)m->unique_id, j, ii, (unsigned long)m->connect_tsms, (unsigned long)m->unique_id);
