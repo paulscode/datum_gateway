@@ -1231,8 +1231,9 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	// Never-generated coinbase slots have coinb1_len==0; quickdiff patches at len-2.
 	if (cb->coinb1_len < 2) {
 		send_unknown_work_error(c, id);
-		m->share_count_rejected++;
-		m->share_diff_rejected += job_diff;
+		// Through stratum_note_share like every other refusal, so the dashboard totals
+		// and the reject reasons count it too.
+		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 		return 0;
 	}
 	
