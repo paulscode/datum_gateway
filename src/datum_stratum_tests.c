@@ -40,6 +40,8 @@
 #include "datum_api.h"
 #include "datum_jsonrpc.h"
 #include "datum_pow.h"
+#include "datum_protocol.h"
+#include "datum_protocol_internal.h"
 #include "datum_stratum.h"
 #include "datum_utils.h"
 
@@ -446,6 +448,8 @@ static void datum_stratum_extranonce2_size_tests(void) {
 	free(m);
 }
 
+bool stratum_job_coinbaser_ready(T_DATUM_STRATUM_THREADPOOL_DATA *sdata, T_DATUM_STRATUM_JOB *job);
+
 static void datum_blake2b_coinbase_selection_tests(void) {
 	T_DATUM_STRATUM_THREADPOOL_DATA *sdata = calloc(1, sizeof(*sdata));
 	T_DATUM_STRATUM_JOB job = {0};
@@ -464,6 +468,53 @@ static void datum_blake2b_coinbase_selection_tests(void) {
 	datum_test(datum_stratum_coinbase_index(sdata, false) == COINBASE_TYPE_YUGE);
 	sdata->full_coinbase_ready = false;
 	datum_test(datum_stratum_coinbase_index(sdata, false) == 0);
+	
+	// Pooled, class 0 (a full template whose coinbase pays only the pool) is
+	// never served: until the split is in, the answer is the subsidy-only
+	// coinbase, which send_mining_notify serves only on a new block's job and
+	// otherwise withholds.
+	{
+		const int saved_active = atomic_load(&datum_protocol_client_active);
+		unsigned char notice[36] = {DATUM_ABW_DRAFT_REVISION, DATUM_ABW_ASSIGNMENT_ACTIVE, 0, 0x5a};
+		notice[35] = 0xFE;
+		datum_protocol_abw_reset();
+		datum_test(datum_protocol_abw_assignment_notice(sizeof(notice), notice));
+		atomic_store(&datum_protocol_client_active, 3);
+		datum_test(datum_protocol_is_active());
+		
+		datum_test(datum_stratum_coinbase_index(sdata, false) == DATUM_COINBASE_ID_EMPTY);
+		job.job_state = 0;
+		sdata->full_coinbase_ready = true;
+		datum_test(datum_stratum_coinbase_index(sdata, false) == DATUM_COINBASE_ID_EMPTY);
+		job.job_state = JOB_STATE_FULL_PRIORITY_WAIT_COINBASER;
+		datum_test(datum_stratum_coinbase_index(sdata, false) == COINBASE_TYPE_YUGE);
+		datum_test(datum_stratum_coinbase_index(sdata, true) == DATUM_COINBASE_ID_EMPTY);
+		
+		// Pooled, a job never gives up waiting for its coinbaser: giving up is
+		// what published the pool-only class. 60 s with the coinbaser still
+		// outstanding is not ready, and leaves full_coinbase_ready alone.
+		job.global_index = 0;
+		job.tsms = 1000;
+		job.need_coinbaser = true;
+		sdata->loop_tsms = 1000 + 60000;
+		sdata->full_coinbase_ready = false;
+		datum_test(!stratum_job_coinbaser_ready(sdata, &job));
+		datum_test(!sdata->full_coinbase_ready);
+		// and once it lands, it is ready.
+		job.need_coinbaser = false;
+		datum_test(stratum_job_coinbaser_ready(sdata, &job));
+		datum_test(sdata->full_coinbase_ready);
+		
+		// Solo still gives up after 5 s, falling back to class 0, which pays
+		// the operator's own address.
+		atomic_store(&datum_protocol_client_active, 0);
+		job.need_coinbaser = true;
+		datum_test(stratum_job_coinbaser_ready(sdata, &job));
+		datum_test(!sdata->full_coinbase_ready);
+		
+		atomic_store(&datum_protocol_client_active, saved_active);
+		datum_protocol_abw_reset();
+	}
 	free(sdata);
 }
 

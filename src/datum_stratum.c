@@ -406,8 +406,10 @@ int datum_stratum_v1_get_thread_subscriber_count(T_DATUM_THREAD_DATA *my) {
 bool stratum_job_coinbaser_ready(T_DATUM_STRATUM_THREADPOOL_DATA *sdata, T_DATUM_STRATUM_JOB *job) {
 	bool a = false;
 	// backup timeout for coinbaser on these jobs
-	if ((sdata->loop_tsms > job->tsms) && (sdata->loop_tsms - job->tsms) > 5000) {
+	if (!datum_protocol_is_active() && (sdata->loop_tsms > job->tsms) && (sdata->loop_tsms - job->tsms) > 5000) {
 		// enforce a timeout of 5 seconds on waiting on a coinbaser...
+		// Solo only. Pooled, giving up publishes a full template whose coinbase cannot pay the
+		// pool's split; miners keep their current work until the coinbaser lands instead.
 		sdata->full_coinbase_ready = false;
 		return true;
 	}
@@ -1633,9 +1635,11 @@ int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 }
 
 // The coinbase a BLAKE2b job commits to, the same for every miner: the
-// subsidy-only one for new-block work, COINBASE_TYPE_TINY (pays only the pool)
-// while the job state is below JOB_STATE_FULL_PRIORITY_WAIT_COINBASER or
-// full_coinbase_ready is unset, and COINBASE_TYPE_YUGE after that. The classes
+// subsidy-only one for new-block work, and COINBASE_TYPE_YUGE once the job state
+// reaches JOB_STATE_FULL_PRIORITY_WAIT_COINBASER and full_coinbase_ready is set.
+// Before that, solo gets COINBASE_TYPE_TINY (pays the operator's address) and
+// pooled gets the subsidy-only id, which send_mining_notify turns into no job at
+// all unless this is a new block's job. The classes
 // were sized to what SHA256d firmware could accept (see the COINBASE_TYPE_
 // defines); on BLAKE2b work the miner never receives the coinbase, so there is
 // no per-miner selection.
@@ -1644,7 +1648,13 @@ unsigned int datum_stratum_coinbase_index(
 	if (new_block) return DATUM_COINBASE_ID_EMPTY;
 	if (!sdata || !sdata->cur_stratum_job ||
 	    sdata->cur_stratum_job->job_state < JOB_STATE_FULL_PRIORITY_WAIT_COINBASER ||
-	    !sdata->full_coinbase_ready) return 0;
+	    !sdata->full_coinbase_ready) {
+		// Class 0 pays only the pool. Pooled, a job whose coinbaser is not in yet gets the
+		// subsidy-only coinbase or nothing (see send_mining_notify), never class 0 on a full
+		// template: a block found on that pays the pool alone. Solo, class 0 pays the
+		// configured address and stays.
+		return datum_protocol_is_active() ? DATUM_COINBASE_ID_EMPTY : 0;
+	}
 	return COINBASE_TYPE_YUGE;
 }
 
@@ -1667,6 +1677,20 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	
 	if (!j) {
 		return -1;
+	}
+	
+	if (datum_protocol_is_active() && !new_block) {
+		// This thread may not have looked at the job's coinbaser yet (a client arriving on a
+		// thread with no other miners, or a vardiff resend while the blast waits), so ask now.
+		if (!sdata->full_coinbase_ready && j->job_state >= JOB_STATE_FULL_PRIORITY_WAIT_COINBASER) {
+			stratum_job_coinbaser_ready(sdata, j);
+		}
+		// Still not ready and this job has no subsidy-only coinbase (only a new height's job
+		// does): send nothing. The miner keeps the work it has and gets this job with the split
+		// when the coinbaser lands.
+		if (!j->is_new_block && datum_stratum_coinbase_index(sdata, false) == DATUM_COINBASE_ID_EMPTY) {
+			return 0;
+		}
 	}
 	
 	//job_id - ID of the job. Use this ID while submitting share generated from this job.
