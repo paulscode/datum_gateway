@@ -51,9 +51,16 @@
 
 // in ascii hex
 #define STRATUM_COINBASE1_MAX_LEN 1024
-#define STRATUM_COINBASE2_MAX_LEN 32768
+// coinb2 holds every dictated output in hex. The share's coinbase section writes each
+// part's length as a uint16, capping either part at 65535 bytes; MAX_DICTATED_COINBASE_SIZE
+// keeps coinb2 at most 32767 bytes, which is 65534 hex characters.
+#define STRATUM_COINBASE2_MAX_LEN 65536
 
 #define MAX_COINBASE_TXN_SIZE_BYTES (((STRATUM_COINBASE1_MAX_LEN+STRATUM_COINBASE2_MAX_LEN)>>1)+64)
+
+// A share message (0x27) with its job and coinbase sections: the coinbase's two parts
+// reach MAX_COINBASE_TXN_SIZE_BYTES, the rest is merkle branches, username and pad.
+#define MAX_POW_MESSAGE_SIZE (MAX_COINBASE_TXN_SIZE_BYTES+4096)
 
 #define STRATUM_JOB_INDEX_XOR ((uint16_t)0xC0DE)
 

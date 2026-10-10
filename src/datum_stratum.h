@@ -50,15 +50,29 @@
 
 #define MAX_STRATUM_JOBS 256
 
-#define MAX_COINBASE_TYPES 6
+// Two classes, not upstream's six. The other four (500, 750, 2250 and 6500 bytes) were
+// sized to what SHA256d firmware could accept, because those miners rebuild the
+// coinbase. A BLAKE2b miner is sent a 39-byte commitment and never sees the coinbase,
+// so every miner gets COINBASE_TYPE_YUGE (upstream 4d0a045 already serves it to all).
+// Building four classes nobody is served cost CPU per template and, with the class at
+// MAX_DICTATED_COINBASE_SIZE, doubled the job table: jobs are zeroed whole on reuse, so
+// every page of all 256 is eventually resident. Same reduction as iohzrd's c031568.
+#define MAX_COINBASE_TYPES 2
 #define MAX_COINBASE_DATA_SIZE 100
 #define DATUM_COINBASE_ID_EMPTY 0xff
 #define COINBASE_TYPE_TINY 0 // "empty", just pays pool
-#define COINBASE_TYPE_SMALL 1 // Nicehash needs a tiny coinb1, among other things. Max 500 bytes.
-#define COINBASE_TYPE_ANTMAIN 2 // Hack for antminer stock firmware to 750 bytes
-#define COINBASE_TYPE_RESPECTABLE 3 // 6500 byte max (whatsminers)
-#define COINBASE_TYPE_YUGE 4 // 16KB max (ePIC, bitaxe)
-#define COINBASE_TYPE_ANTMAIN2 5 // 2.25KB max (S21, +?)
+#define COINBASE_TYPE_YUGE 1 // MAX_DICTATED_COINBASE_SIZE max; every miner on BLAKE2b work
+
+// The largest generation transaction this gateway builds, in bytes, and the size of
+// COINBASE_TYPE_YUGE: about 1030 P2WPKH outputs (31 bytes each) or 740 taproot outputs
+// (43 bytes each). datum_stratum_coinbase_fit_to_template cuts it to what the
+// template's size, weight and sigop room leave. Port of iohzrd's CONVOY PR #29
+// (2a88b60), which sits on a refactor (#28) this branch does not carry.
+#define MAX_DICTATED_COINBASE_SIZE 32000
+
+// The dictated outputs one coinbaser response may carry, and the size of the job's
+// parsed output list. Matches RATUM's MAX_COINBASER_OUTPUTS.
+#define MAX_COINBASER_OUTPUTS 1024
 
 // Submitblock json rpc command max size is max block size * 2 for ascii plus some breathing room
 #define MAX_SUBMITBLOCK_SIZE 8500000
@@ -145,7 +159,7 @@ typedef struct T_DATUM_STRATUM_JOB {
 	unsigned char merklebranches_bin[24][32];
 	
 	// when fetching the coinbaser, we'll just stash all of the possible and valid output scripts here
-	T_DATUM_TXN_OUTPUT available_coinbase_outputs[512];
+	T_DATUM_TXN_OUTPUT available_coinbase_outputs[MAX_COINBASER_OUTPUTS];
 	int available_coinbase_outputs_count;
 	uint8_t pool_addr_script[MAX_OUTPUT_SCRIPT_LEN];
 	uint8_t pool_addr_script_len;
