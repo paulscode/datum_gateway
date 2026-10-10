@@ -108,8 +108,8 @@ static void datum_blake2b_client_pot_commitment_tests(void) {
 	memset(job.coinbase[0].coinb1_bin, 0x11, 20);
 	memset(job.coinbase[0].coinb2_bin, 0x22, 8);
 	job.coinbase[0].coinb1_bin[4] = 0xFF;
-	job.coinbase[2] = job.coinbase[0];
-	job.coinbase[2].coinb2_bin[0] ^= 0x55;
+	job.coinbase[COINBASE_TYPE_YUGE] = job.coinbase[0];
+	job.coinbase[COINBASE_TYPE_YUGE].coinb2_bin[0] ^= 0x55;
 	job.subsidy_only_coinbase = job.coinbase[0];
 	job.subsidy_only_coinbase.coinb2_bin[0] ^= 0xaa;
 	job.target_pot_index = 4;
@@ -119,7 +119,7 @@ static void datum_blake2b_client_pot_commitment_tests(void) {
 	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.coinbase[0], false, 14, c_pot, pot));
 	datum_test(memcmp(c_ff, c_pot, 32) != 0);
 	datum_test(memcmp(ff, pot, 39) != 0);
-	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.coinbase[2], false, 14, c_variant, NULL));
+	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.coinbase[COINBASE_TYPE_YUGE], false, 14, c_variant, NULL));
 	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.subsidy_only_coinbase, true, 14, c_subsidy, NULL));
 	datum_test(memcmp(c_variant, c_pot, 32) != 0);
 	datum_test(memcmp(c_subsidy, c_pot, 32) != 0);
@@ -213,7 +213,7 @@ static void datum_blake2b_h_not_zero_tests(void) {
 static void datum_blake2b_coinbase_selection_tests(void) {
 	T_DATUM_STRATUM_THREADPOOL_DATA *sdata = calloc(1, sizeof(*sdata));
 	T_DATUM_STRATUM_JOB job = {0};
-	T_DATUM_MINER_DATA miner = {.coinbase_selection = 3};
+	T_DATUM_MINER_DATA miner = {.coinbase_selection = COINBASE_TYPE_YUGE};
 	
 	datum_test(sdata != NULL);
 	if (!sdata) return;
@@ -223,7 +223,7 @@ static void datum_blake2b_coinbase_selection_tests(void) {
 	sdata->full_coinbase_ready = true;
 	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == 0);
 	job.job_state = JOB_STATE_FULL_PRIORITY_WAIT_COINBASER;
-	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == 3);
+	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == COINBASE_TYPE_YUGE);
 	miner.coinbase_selection = MAX_COINBASE_TYPES;
 	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == 0);
 	free(sdata);
@@ -334,9 +334,10 @@ static void datum_stratum_new_thread_job_tests(void) {
 	datum_test(datum_stratum_v1_socket_thread_client_cmd(client, subscribe) == 0);
 	client->w_buffer[client->out_buf] = 0;
 	
-	// Its first job must use the full coinbase (class 4), not the pool-only one (class 0)
+	// Its first job must use the full coinbase (COINBASE_TYPE_YUGE), not the pool-only one (class 0)
+	_Static_assert(COINBASE_TYPE_YUGE == 1, "the expected job id below encodes the class");
 	const char * const notify = strstr(client->w_buffer, "\"mining.notify\"");
-	datum_test(notify && strstr(notify, "[\"0000000000c0de04\","));
+	datum_test(notify && strstr(notify, "[\"0000000000c0de01\","));
 	
 	T_DATUM_STRATUM_DUPES * const dupes = sdata->dupes;
 	if (dupes) free(dupes->ptr);

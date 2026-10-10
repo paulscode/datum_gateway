@@ -65,14 +65,13 @@ const char * const homepage_html_end = "</body></html>";
 
 #define DATUM_API_HOMEPAGE_MAX_SIZE 128000
 
+// Indexed by coinbase class. Keyed to the constants so the table cannot drift from
+// MAX_COINBASE_TYPES again: with six names over two classes, YUGE (1) read "Tiny".
 const char *cbnames[] = {
-	"Blank",
-	"Tiny",
-	"Default",
-	"Respect",
-	"Yuge",
-	"Antmain2"
+	[COINBASE_TYPE_TINY] = "Tiny",
+	[COINBASE_TYPE_YUGE] = "Yuge",
 };
+_Static_assert(sizeof(cbnames) / sizeof(cbnames[0]) == MAX_COINBASE_TYPES, "one name per coinbase class");
 
 typedef struct MHD_Response *(*create_response_func_t)();
 
