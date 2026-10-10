@@ -63,6 +63,13 @@ floor for that connection, replacing `stratum`.`vardiff_min` for it.
 Requested values are rounded down to a power of two, matching how vardiff steps. A
 request of `d=5000` becomes 4096.
 
+**Units.** `d=N`, `fd=N` and `stratum`.`vardiff_client_min` are in share difficulty,
+the number your miner shows, so `d=8192` is about 8192 in its log. `stratum`.`vardiff_min`
+is written as the full difficulty instead, which is 2^32 times larger: the same floor
+is `"35.2T"` there, and the dashboard shows it that way. A bare integer in
+`vardiff_min` is still read in share difficulty, with a warning, and must be a power of
+two.
+
 Three limits still apply, in the sense that a password cannot lower difficulty past
 them:
 
@@ -78,7 +85,8 @@ them:
   Gateway does by default, never above it.
 - A miner fingerprinted as needing high difficulty keeps that requirement. This is a
   compatibility workaround for firmware known to misbehave lower, not a preference;
-  set `stratum`.`fingerprint_miners` to false if you need to override it.
+  set `stratum`.`fingerprint_miners` to false if you need to override it. Fingerprinting
+  sets no difficulty floor for BLAKE2b miners, so on this chain the limit never applies.
 - In pooled mining, the pool's own declared minimum share difficulty applies. Shares
   below it would simply be rejected upstream, so the Gateway does not send work below
   it regardless of what the password asked for. This limit does not apply to non-pooled
