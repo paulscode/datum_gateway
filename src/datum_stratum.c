@@ -962,6 +962,60 @@ const char *datum_stratum_share_reject_name(unsigned int reason) {
 	return stratum_share_reject_names[reason];
 }
 
+/*
+ * Which reasons the local rejected total is made of, worst first, listing only the
+ * reasons that have actually happened, or "None".
+ *
+ * The dashboard's substitution buffer is well below the worst case of every reason being
+ * present, so each entry is measured before it is written and the list ends in "..."
+ * rather than with half a reason name. A truncated name would read as a different reason.
+ */
+void datum_stratum_format_reject_reasons(char *buffer, size_t buffer_size) {
+	unsigned int order[DATUM_SHARE_OUTCOME_COUNT];
+	unsigned int n = 0;
+	uint64_t counts[DATUM_SHARE_OUTCOME_COUNT];
+	
+	if (!buffer_size) return;
+	buffer[0] = '\0';
+	
+	for (unsigned int i = DATUM_SHARE_ACCEPTED + 1; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		counts[i] = __atomic_load_n(&stratum_client_reject_reason_count[i], __ATOMIC_RELAXED);
+		if (counts[i]) order[n++] = i;
+	}
+	
+	if (!n) {
+		snprintf(buffer, buffer_size, "None");
+		return;
+	}
+	
+	// Descending by count. A handful of entries, so a plain insertion sort.
+	for (unsigned int i = 1; i < n; ++i) {
+		const unsigned int key = order[i];
+		int j = (int)i - 1;
+		while (j >= 0 && counts[order[j]] < counts[key]) {
+			order[j + 1] = order[j];
+			--j;
+		}
+		order[j + 1] = key;
+	}
+	
+	size_t at = 0;
+	for (unsigned int i = 0; i < n; ++i) {
+		char entry[64];
+		const int w = snprintf(entry, sizeof(entry), "%s%s %llu",
+			at ? ", " : "", datum_stratum_share_reject_name(order[i]),
+			(unsigned long long)counts[order[i]]);
+		if (w < 0 || (size_t)w >= sizeof(entry)) break;
+		// Room for this entry and for the ", ..." that would follow it
+		if (at + (size_t)w + 6 >= buffer_size) {
+			snprintf(&buffer[at], buffer_size - at, "%s", at ? ", ..." : "...");
+			return;
+		}
+		memcpy(&buffer[at], entry, (size_t)w + 1);
+		at += (size_t)w;
+	}
+}
+
 // Count a share against its connection and against the gateway-local totals. The
 // connection's counters are only touched by its own thread; the totals are shared.
 static void stratum_note_share(T_DATUM_MINER_DATA *m, T_DATUM_SHARE_OUTCOME outcome, uint64_t diff) {

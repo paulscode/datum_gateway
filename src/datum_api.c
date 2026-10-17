@@ -108,6 +108,10 @@ void datum_api_var_STRATUM_SHARES_REJECTED(char *buffer, size_t buffer_size, con
 		__atomic_load_n(&stratum_client_rejected_share_count, __ATOMIC_RELAXED),
 		__atomic_load_n(&stratum_client_rejected_share_diff, __ATOMIC_RELAXED));
 }
+void datum_api_var_STRATUM_REJECT_REASONS(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
+	(void)vardata;
+	datum_stratum_format_reject_reasons(buffer, buffer_size);
+}
 void datum_api_var_DATUM_SHARES_ACCEPTED(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata) {
 	(void)vardata;
 	if (!datum_config.datum_pool_host[0]) {
@@ -261,6 +265,7 @@ void datum_api_var_DATUM_GATEWAY_VERSION(char *buffer, size_t buffer_size, const
 DATUM_API_VarEntry var_entries[] = {
 	{"STRATUM_SHARES_ACCEPTED", datum_api_var_STRATUM_SHARES_ACCEPTED},
 	{"STRATUM_SHARES_REJECTED", datum_api_var_STRATUM_SHARES_REJECTED},
+	{"STRATUM_REJECT_REASONS", datum_api_var_STRATUM_REJECT_REASONS},
 	{"DATUM_SHARES_ACCEPTED", datum_api_var_DATUM_SHARES_ACCEPTED},
 	{"DATUM_SHARES_REJECTED", datum_api_var_DATUM_SHARES_REJECTED},
 	{"DATUM_CONNECTION_STATUS", datum_api_var_DATUM_CONNECTION_STATUS},
@@ -960,7 +965,7 @@ int datum_api_client_dashboard(struct MHD_Connection *connection) {
 	tsms = current_time_millis();
 	
 	sz = datum_buf_append_snprintf(output, max_sz, 0, "%s", www_clients_top_html);
-	sz = datum_buf_append_snprintf(output, max_sz, sz, "<form action='/cmd' method='post'><input type='hidden' name='csrf' value='%s' /><TABLE><TR><TD><U>TID/CID</U></TD>  <TD><U>RemHost</U></TD>  <TD><U>Auth Username</U></TD> <TD><U>Subbed</U></TD> <TD><U>Last Accepted</U></TD> <TD><U>VDiff</U></TD> <TD><U>DiffA (A)</U></TD> <TD><U>DiffR (R)</U></TD> <TD><U>Hashrate (age)</U></TD> <TD><U>Coinbase</U></TD> <TD><U>UserAgent</U> </TD><TD><U>Command</U></TD></TR>", datum_config.api_csrf_token);
+	sz = datum_buf_append_snprintf(output, max_sz, sz, "<form action='/cmd' method='post'><input type='hidden' name='csrf' value='%s' /><TABLE><TR><TD><U>TID/CID</U></TD>  <TD><U>RemHost</U></TD>  <TD><U>Auth Username</U></TD> <TD><U>Subbed</U></TD> <TD><U>Last Accepted</U></TD> <TD><U>VDiff</U></TD> <TD><U>DiffA (A)</U></TD> <TD><U>DiffR (R)</U></TD> <TD><U>Last Reject</U></TD> <TD><U>Hashrate (age)</U></TD> <TD><U>Coinbase</U></TD> <TD><U>UserAgent</U> </TD><TD><U>Command</U></TD></TR>", datum_config.api_csrf_token);
 	
 	for (j = 0; j < max_threads; ++j) {
 		for(ii=0;ii<global_stratum_app->max_clients_thread;ii++) {
@@ -992,6 +997,15 @@ int datum_api_client_dashboard(struct MHD_Connection *connection) {
 					}
 					sz = datum_buf_append_snprintf(output, max_sz, sz, "<TD>%"PRIu64" (%"PRIu64") %.2f%%</TD>", m->share_diff_rejected, m->share_count_rejected, hr);
 					
+					// Why this miner's last share was refused. The count beside it says how
+					// many, and on its own that cannot tell a miner on the wrong extranonce2
+					// size from one whose work has simply rotated away.
+					if (m->share_count_rejected) {
+						sz = datum_buf_append_snprintf(output, max_sz, sz, "<TD>%s</TD>", datum_stratum_share_reject_name(m->last_reject_reason));
+					} else {
+						sz = datum_buf_append_snprintf(output, max_sz, sz, "<TD>-</TD>");
+					}
+					
 					astat = m->stats.active_index?0:1; // inverted
 					hr = 0.0;
 					if ((m->stats.last_swap_ms > 0) && (m->stats.diff_accepted[astat] > 0)) {
@@ -1016,7 +1030,7 @@ int datum_api_client_dashboard(struct MHD_Connection *connection) {
 					sz = datum_buf_append_html_escape(output, max_sz, sz, m->useragent);
 					sz = datum_buf_append_snprintf(output, max_sz, sz, "</TD>");
 				} else {
-					sz = datum_buf_append_snprintf(output, max_sz, sz, "<TD COLSPAN=\"8\">Not Subscribed</TD>");
+					sz = datum_buf_append_snprintf(output, max_sz, sz, "<TD COLSPAN=\"9\">Not Subscribed</TD>");
 				}
 				
 				sz = datum_buf_append_snprintf(output, max_sz, sz, "<TD><button name='kill_client' value='%d_%d_%lu_%lu' onclick=\"sendPostRequest('/cmd', {cmd:'kill_client',tid:%d,cid:%d,t:%lu,id:%lu}); return false;\">Kick</button></TD></TR>", j, ii, (unsigned long)m->connect_tsms, (unsigned long)m->unique_id, j, ii, (unsigned long)m->connect_tsms, (unsigned long)m->unique_id);

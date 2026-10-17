@@ -545,6 +545,45 @@ static void datum_stratum_reject_reason_tests(void) {
 	datum_test(stratum_client_reject_reason_count[DATUM_SHARE_ACCEPTED] == 0);
 	datum_stratum_test_client_free(c);
 	
+	// The dashboard's breakdown. Nothing rejected reads None, which is what an operator
+	// with no problem sees.
+	char buf[256];
+	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		stratum_client_reject_reason_count[i] = 0;
+	}
+	datum_stratum_format_reject_reasons(buf, sizeof(buf));
+	datum_test(!strcmp(buf, "None"));
+	
+	// listed worst first, and a reason that has not happened is not listed at all
+	stratum_client_reject_reason_count[DATUM_SHARE_REJECT_STALE_WORK] = 3;
+	stratum_client_reject_reason_count[DATUM_SHARE_REJECT_DUPLICATE] = 900;
+	stratum_client_reject_reason_count[DATUM_SHARE_REJECT_ABOVE_TARGET] = 40;
+	datum_stratum_format_reject_reasons(buf, sizeof(buf));
+	datum_test(!strcmp(buf, "duplicate 900, high-hash 40, stale-work 3"));
+	
+	// Every reason at once, into a buffer too small to hold them, must not leave a half
+	// written name behind: "extranonce2-si" would read as a reason that does not exist.
+	for (unsigned int i = DATUM_SHARE_ACCEPTED + 1; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		stratum_client_reject_reason_count[i] = 18446744073709551615ULL;
+	}
+	char small[64];
+	memset(small, 0x7f, sizeof(small));
+	datum_stratum_format_reject_reasons(small, sizeof(small));
+	datum_test(memchr(small, 0, sizeof(small)) != NULL);
+	datum_test(strstr(small, ", ...") != NULL);
+	for (unsigned int i = DATUM_SHARE_ACCEPTED + 1; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		const char * const name = datum_stratum_share_reject_name(i);
+		const char * const found = strstr(small, name);
+		if (found) {
+			datum_test(found[strlen(name)] == ' ');
+		}
+	}
+	
+	// too small for even one entry says there is something, rather than nothing
+	char tiny[16];
+	datum_stratum_format_reject_reasons(tiny, sizeof(tiny));
+	datum_test(!strcmp(tiny, "..."));
+	
 	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
 		stratum_client_reject_reason_count[i] = saved[i];
 	}

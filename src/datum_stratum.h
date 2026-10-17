@@ -339,5 +339,6 @@ typedef enum {
 extern uint64_t stratum_client_reject_reason_count[DATUM_SHARE_OUTCOME_COUNT];
 
 const char *datum_stratum_share_reject_name(unsigned int reason);
+void datum_stratum_format_reject_reasons(char *buffer, size_t buffer_size);
 
 #endif
