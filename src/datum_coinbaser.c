@@ -874,8 +874,17 @@ void *datum_coinbaser_thread(void *ptr) {
 			s = global_cur_stratum_jobs[global_latest_stratum_job_index];
 			if (s) {
 				sjob = global_latest_stratum_job_index;
-				if (s->need_coinbaser) {
-					need_coinbaser = true;
+				// Take the flag from the new job, both ways. Setting it only to true left a
+				// failed fetch's retry (below) carried over to the next job: an EMPTY_PLUS job
+				// published on a new block needs no coinbaser, and a split fetched for it
+				// would rewrite coinbases miners are already hashing, so a block found in
+				// that window would rebuild to the wrong hash at submit.
+				if (__builtin_expect(atomic_load_explicit(&need_coinbaser_rwlocks_init_done, memory_order_acquire), 1)) {
+					pthread_rwlock_rdlock(&need_coinbaser_rwlocks[sjob]);
+					need_coinbaser = s->need_coinbaser;
+					pthread_rwlock_unlock(&need_coinbaser_rwlocks[sjob]);
+				} else {
+					need_coinbaser = s->need_coinbaser;
 				}
 			} else {
 				need_coinbaser = false;
