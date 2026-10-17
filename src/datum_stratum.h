@@ -242,6 +242,9 @@ typedef struct {
 	
 	uint64_t share_diff_rejected;
 	uint64_t share_count_rejected;
+	// Why this connection's last share was refused, so one misconfigured miner among many
+	// can be told apart on the clients page. Only meaningful once share_count_rejected > 0.
+	unsigned char last_reject_reason;
 	
 	// for vardiff
 	uint64_t share_count_since_snap;
@@ -306,5 +309,35 @@ extern uint64_t stratum_client_accepted_share_count;
 extern uint64_t stratum_client_accepted_share_diff;
 extern uint64_t stratum_client_rejected_share_count;
 extern uint64_t stratum_client_rejected_share_diff;
+
+/*
+ * Why a share was refused.
+ *
+ * The totals above say how many, which on its own cannot tell apart a miner sending work
+ * for a job that has rotated away, a farm configured with the wrong extranonce2 size, and
+ * a duplicate. Those have nothing to do with each other and the operator's next step
+ * differs for each, so the reason is counted too.
+ */
+typedef enum {
+	DATUM_SHARE_ACCEPTED = 0,
+	DATUM_SHARE_REJECT_MALFORMED,       // a field was missing, not a string, or out of range
+	DATUM_SHARE_REJECT_VERSION_ROLL,    // version bits outside the mask negotiated by mining.configure
+	DATUM_SHARE_REJECT_UNKNOWN_JOB,     // no such job or coinbase, or the slot now holds a different one
+	DATUM_SHARE_REJECT_EXTRANONCE_SIZE, // not the extranonce2 size this connection was given at subscribe
+	DATUM_SHARE_REJECT_H_NOT_ZERO,      // not even difficulty 1 against the work rebuilt here
+	DATUM_SHARE_REJECT_STALE_PREVBLOCK,
+	DATUM_SHARE_REJECT_TIME_TOO_OLD,
+	DATUM_SHARE_REJECT_TIME_TOO_NEW,
+	DATUM_SHARE_REJECT_ABOVE_TARGET,
+	DATUM_SHARE_REJECT_STALE_WORK,
+	DATUM_SHARE_REJECT_DUPLICATE,
+	DATUM_SHARE_REJECT_INTERNAL,
+	DATUM_SHARE_OUTCOME_COUNT
+} T_DATUM_SHARE_OUTCOME;
+
+// Indexed by T_DATUM_SHARE_OUTCOME. Slot 0 is unused; the accepted total is above.
+extern uint64_t stratum_client_reject_reason_count[DATUM_SHARE_OUTCOME_COUNT];
+
+const char *datum_stratum_share_reject_name(unsigned int reason);
 
 #endif

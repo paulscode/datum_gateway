@@ -479,7 +479,81 @@ static void datum_stratum_configure_min_diff_tests(void) {
 	datum_config.stratum_v1_password_difficulty = saved_password_difficulty;
 }
 
+int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj);
+
+// Every reason names itself, no two share a name, and a submit records the reason it was
+// refused for, both per connection and in the gateway-wide count. Only the paths that
+// fail before a job is needed are driven here.
+static void datum_stratum_reject_reason_tests(void) {
+	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		const char * const name = datum_stratum_share_reject_name(i);
+		datum_test(name != NULL && name[0] != '\0');
+		datum_test(strcmp(name, "unknown") != 0);
+		for (unsigned int j = i + 1; j < DATUM_SHARE_OUTCOME_COUNT; ++j) {
+			datum_test(strcmp(name, datum_stratum_share_reject_name(j)) != 0);
+		}
+	}
+	// out of range says so rather than reading off the end of the table
+	datum_test(!strcmp(datum_stratum_share_reject_name(DATUM_SHARE_OUTCOME_COUNT), "unknown"));
+	datum_test(!strcmp(datum_stratum_share_reject_name(60000), "unknown"));
+	
+	uint64_t saved[DATUM_SHARE_OUTCOME_COUNT];
+	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		saved[i] = stratum_client_reject_reason_count[i];
+		stratum_client_reject_reason_count[i] = 0;
+	}
+	const uint64_t saved_rejected = stratum_client_rejected_share_count;
+	const uint64_t saved_rejected_diff = stratum_client_rejected_share_diff;
+	
+	static const struct {
+		const char *params;
+		T_DATUM_SHARE_OUTCOME reason;
+	} cases[] = {
+		{ "[\"w\"]", DATUM_SHARE_REJECT_MALFORMED },                           // no job id
+		{ "[\"w\", 7]", DATUM_SHARE_REJECT_MALFORMED },                        // not a string
+		{ "[\"w\", \"0123\"]", DATUM_SHARE_REJECT_MALFORMED },                 // wrong length
+		{ "[\"w\", \"00000000003f2100\"]", DATUM_SHARE_REJECT_UNKNOWN_JOB },   // index 0xffff
+		{ "[\"w\", \"0000000000c0db00\"]", DATUM_SHARE_REJECT_UNKNOWN_JOB },   // index 5, no job there
+	};
+	
+	T_DATUM_CLIENT_DATA * const c = datum_stratum_test_client();
+	T_DATUM_MINER_DATA * const m = c->app_client_data;
+	json_error_t err;
+	
+	// before subscribe there is no connection state to count against
+	json_t *params = json_loads(cases[0].params, 0, &err);
+	assert(params);
+	datum_test(client_mining_submit(c, 1, params) == 0);
+	datum_test(m->share_count_rejected == 0);
+	json_decref(params);
+	
+	m->subscribed = true;
+	uint64_t expect_rejected = 0;
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+		const unsigned int before = (unsigned int)stratum_client_reject_reason_count[cases[i].reason];
+		params = json_loads(cases[i].params, 0, &err);
+		assert(params);
+		c->out_buf = 0;
+		datum_test(client_mining_submit(c, 2, params) == 0);
+		json_decref(params);
+		++expect_rejected;
+		datum_test(m->share_count_rejected == expect_rejected);
+		datum_test(m->last_reject_reason == cases[i].reason);
+		datum_test(stratum_client_reject_reason_count[cases[i].reason] == before + 1);
+	}
+	datum_test(stratum_client_rejected_share_count == saved_rejected + expect_rejected);
+	datum_test(stratum_client_reject_reason_count[DATUM_SHARE_ACCEPTED] == 0);
+	datum_stratum_test_client_free(c);
+	
+	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
+		stratum_client_reject_reason_count[i] = saved[i];
+	}
+	stratum_client_rejected_share_count = saved_rejected;
+	stratum_client_rejected_share_diff = saved_rejected_diff;
+}
+
 void datum_stratum_tests(void) {
+	datum_stratum_reject_reason_tests();
 	datum_stratum_request_min_diff_tests();
 	datum_stratum_password_opts_tests();
 	datum_stratum_client_vardiff_floor_tests();
