@@ -74,6 +74,8 @@ struct MHD_Response *datum_api_create_response_authfail_clients();
 #endif
 
 #ifdef DATUM_API_FOR_UMBREL
+void datum_api_var_STRATUM_SHARES_ACCEPTED(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata);
+void datum_api_var_STRATUM_SHARES_REJECTED(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata);
 void datum_api_var_DATUM_SHARES_ACCEPTED(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata);
 void datum_api_var_DATUM_SHARES_REJECTED(char *buffer, size_t buffer_size, const T_DATUM_API_DASH_VARS *vardata);
 

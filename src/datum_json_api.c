@@ -912,8 +912,14 @@ int datum_api_umbrel_widget(struct MHD_Connection * const connection) {
  	} else {
  		snprintf(reward, sizeof(reward), "N/A");
  	};
-	datum_api_var_DATUM_SHARES_ACCEPTED(accepted_shares, sizeof(accepted_shares), &umbreldata);
-	datum_api_var_DATUM_SHARES_REJECTED(rejected_shares, sizeof(rejected_shares), &umbreldata);
+	// Solo, the pool counts are N/A for good, so show what the miners have submitted here.
+	if (datum_config.datum_pool_host[0]) {
+		datum_api_var_DATUM_SHARES_ACCEPTED(accepted_shares, sizeof(accepted_shares), &umbreldata);
+		datum_api_var_DATUM_SHARES_REJECTED(rejected_shares, sizeof(rejected_shares), &umbreldata);
+	} else {
+		datum_api_var_STRATUM_SHARES_ACCEPTED(accepted_shares, sizeof(accepted_shares), &umbreldata);
+		datum_api_var_STRATUM_SHARES_REJECTED(rejected_shares, sizeof(rejected_shares), &umbreldata);
+	}
 	
 	truncate_char_array(3, reward, accepted_shares, rejected_shares);
 	

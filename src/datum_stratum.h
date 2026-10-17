@@ -301,4 +301,10 @@ extern T_DATUM_SOCKET_APP *global_stratum_app;
 extern pthread_rwlock_t need_coinbaser_rwlocks[MAX_STRATUM_JOBS];
 extern bool need_coinbaser_rwlocks_init_done;
 
+// Gateway-local share totals from connected stratum miners (not pool responses)
+extern uint64_t stratum_client_accepted_share_count;
+extern uint64_t stratum_client_accepted_share_diff;
+extern uint64_t stratum_client_rejected_share_count;
+extern uint64_t stratum_client_rejected_share_diff;
+
 #endif
