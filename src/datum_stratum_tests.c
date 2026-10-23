@@ -1254,7 +1254,9 @@ static void datum_stratum_client_vardiff_floor_tests(void) {
  * Both are only ever seen when something is already wrong, which is exactly when a wrong
  * name or a truncated one sends someone after the wrong fault.
  */
+#ifdef ENABLE_API
 bool datum_api_var_STRATUM_REJECT_REASONS(struct buf * const buf, const T_DATUM_API_DASH_VARS *vardata);
+#endif
 
 static void datum_stratum_reject_reason_tests(void) {
 	// Every reason names itself, and no two share a name
@@ -1270,6 +1272,8 @@ static void datum_stratum_reject_reason_tests(void) {
 	datum_test(!strcmp(datum_stratum_share_reject_name(DATUM_SHARE_OUTCOME_COUNT), "unknown"));
 	datum_test(!strcmp(datum_stratum_share_reject_name(60000), "unknown"));
 
+#ifdef ENABLE_API
+	// The breakdown is rendered by the dashboard, which a build without the API does not have
 	uint64_t saved[DATUM_SHARE_OUTCOME_COUNT];
 	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
 		saved[i] = stratum_client_reject_reason_count[i];
@@ -1314,6 +1318,7 @@ static void datum_stratum_reject_reason_tests(void) {
 	for (unsigned int i = 0; i < DATUM_SHARE_OUTCOME_COUNT; ++i) {
 		stratum_client_reject_reason_count[i] = saved[i];
 	}
+#endif
 }
 
 // Nothing makes a miner subscribe before it authorizes, and some send authorize
