@@ -154,6 +154,10 @@ typedef struct T_DATUM_TEMPLATE_TXN {
 typedef struct {
 	uint16_t	local_index; // tie to stratum work
 	uint64_t	generation; // unique identity for this use of the ring slot
+	// SHA-256 of txn_count and the ordered wtxids, so templates with the same
+	// transactions can be recognised without comparing them. Set once by
+	// datum_template_set_content_hash when the template is built.
+	unsigned char	txn_content_hash[32];
 	
 	uint64_t	coinbasevalue; //
 	uint64_t	mintime; //
@@ -211,6 +215,7 @@ uint64_t datum_template_block_subsidy(const T_DATUM_TEMPLATE_DATA *tdata);
 // generous direction costs a whole block.
 uint64_t datum_template_subsidy_from_fees(uint64_t coinbasevalue, uint64_t total_fee, uint32_t height, bool fees_known);
 T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt);
+void datum_template_set_content_hash(T_DATUM_TEMPLATE_DATA *p);
 bool datum_blocktemplates_abw_ready(T_DATUM_TEMPLATE_DATA *block_template,
 	bool datum_active, bool abw_required);
 void *datum_gateway_template_thread(void *args);
