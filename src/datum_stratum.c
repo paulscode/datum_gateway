@@ -1184,6 +1184,14 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		return 0;
 	}
 	
+	// A quickdiff share must be for the job its quickdiff notify was sent for. The Q label
+	// alone used to select the quickdiff difficulty for any current job.
+	if (quickdiff && (!m->quickdiff_value || g_job_index != m->quickdiff_job_index)) {
+		send_unknown_work_error(c,id);
+		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, m->last_sent_diff);
+		return 0;
+	}
+	
 	const uint64_t job_diff = quickdiff ? m->quickdiff_value : m->stratum_job_diffs[g_job_index];
 	// The difficulty the job's work was committed to; above job_diff only under vardiff_below_pool_min.
 	const uint64_t commit_diff = quickdiff ? m->quickdiff_commit_value : m->stratum_job_commit_diffs[g_job_index];
@@ -1486,10 +1494,9 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	datum_socket_send_string_to_client(c, s);
 	
 	// update connection and gateway-local totals
-	// Credited at the difficulty the share actually meets, up to the one now served: a
-	// miner that applies a new mining.set_difficulty at once, while still on a job sent at
-	// the old one, finds shares at the new difficulty, and crediting them at the job's would
-	// understate its hashrate and hide them from vardiff.
+	// Credited without bias when a harder difficulty is now served than the job was sent at
+	// (see datum_stratum_share_credit_diff): a miner that applies a new set_difficulty at
+	// once, while still on the older job, is measured at its real rate and seen by vardiff.
 	const uint64_t credit_diff = datum_stratum_share_credit_diff(share_hash, job_diff, m->last_sent_diff);
 	stratum_note_share(m, DATUM_SHARE_ACCEPTED, credit_diff);
 	
@@ -1686,18 +1693,22 @@ int client_mining_configure(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 // pool's real minimum would get its shares rejected.
 uint64_t datum_stratum_pool_min_diff(void) {
 	uint64_t d = datum_config.override_vardiff_min;
+	const uint64_t max = UINT64_C(1) << 63;
+	if (d > max) return max;   // rounding up would overflow to 0
 	if (d && roundDownToPowerOfTwo_64(d) != d) d = roundDownToPowerOfTwo_64(d) << 1;
 	return d;
 }
 
-// The difficulty to credit an accepted share at: the one now served when the share meets it
-// and it is above the job's own, otherwise the job's. Only ever raises, and only to a target
-// the share provably meets.
+// The difficulty to credit an accepted share at. Normally the job's. When a harder difficulty
+// is now served than the job was sent at, the share is credited at the served difficulty if
+// it meets it and at nothing otherwise (it is still accepted). That is unbiased whichever
+// target the miner filtered at; crediting a share that misses it at the job's difficulty,
+// as well, would count up to twice the work done.
 uint64_t datum_stratum_share_credit_diff(const uint8_t *share_hash, uint64_t job_diff, uint64_t served_diff) {
 	if (served_diff <= job_diff) return job_diff;
 	unsigned char served_target[32];
 	get_target_from_diff(served_target, served_diff);
-	return compare_hashes(share_hash, served_target) <= 0 ? served_diff : job_diff;
+	return compare_hashes(share_hash, served_target) <= 0 ? served_diff : 0;
 }
 
 // Whether a share accepted at the miner's difficulty also meets the difficulty its work was
@@ -1897,6 +1908,7 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 		m->quickdiff_active = true;
 		m->quickdiff_value = m->last_sent_diff;
 		m->quickdiff_commit_value = commit_diff;
+		m->quickdiff_job_index = j->global_index;
 		get_target_from_diff(m->quickdiff_target, m->quickdiff_value);
 	}
 	

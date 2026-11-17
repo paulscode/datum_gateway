@@ -752,6 +752,8 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 	datum_test(m->stratum_job_commit_diffs[0] == pool_min);
 	datum_test(strstr(datum_stratum_test_take(c), committed_cb1) != NULL);
 	datum_stratum_test_client_free(c);
+	datum_config.override_vardiff_min = UINT64_MAX;
+	datum_test(datum_stratum_pool_min_diff() == (UINT64_C(1) << 63));
 	datum_config.override_vardiff_min = pool_min;
 
 	// Credit: a share is credited at the difficulty now served when it meets it.
@@ -760,7 +762,31 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		get_target_from_diff(t_old, 1024);
 		get_target_from_diff(t_new, 16384);
 		datum_test(datum_stratum_share_credit_diff(t_new, 1024, 16384) == 16384);
-		datum_test(datum_stratum_share_credit_diff(t_old, 1024, 16384) == 1024);
+		// Missing the served target: accepted, credited at nothing (unbiased; see the helper).
+		datum_test(datum_stratum_share_credit_diff(t_old, 1024, 16384) == 0);
+	}
+
+	// A quickdiff (Q) share is only for the job its quickdiff notify was sent for.
+	{
+		T_DATUM_STRATUM_JOB * const saved_job0 = global_cur_stratum_jobs[0];
+		global_cur_stratum_jobs[0] = job;
+		c = datum_stratum_test_client();
+		m = c->app_client_data;
+		m->subscribed = true;
+		m->quickdiff_value = 4096;
+		m->quickdiff_job_index = 7;
+		json_error_t err;
+		json_t *params = json_loads("[\"w\", \"Q0000000000c0de00\"]", 0, &err);
+		datum_test(params && client_mining_submit(c, 3, params) == 0);
+		datum_test(m->last_reject_reason == DATUM_SHARE_REJECT_UNKNOWN_JOB);
+		json_decref(params);
+		m->quickdiff_job_index = 0;
+		params = json_loads("[\"w\", \"Q0000000000c0de00\"]", 0, &err);
+		datum_test(params && client_mining_submit(c, 4, params) == 0);
+		datum_test(m->last_reject_reason != DATUM_SHARE_REJECT_UNKNOWN_JOB);
+		json_decref(params);
+		datum_stratum_test_client_free(c);
+		global_cur_stratum_jobs[0] = saved_job0;
 	}
 
 	// Forwarding: only a share meeting the committed target goes to the pool.

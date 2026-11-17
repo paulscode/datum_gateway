@@ -261,6 +261,8 @@ typedef struct {
 	uint64_t quickdiff_value;
 	uint8_t quickdiff_target[32];
 	uint64_t quickdiff_commit_value;
+	// The job the current quickdiff notify was sent for; Q shares for any other are refused.
+	uint16_t quickdiff_job_index;
 	
 	uint64_t forced_high_min_diff;
 
