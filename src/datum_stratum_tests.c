@@ -44,6 +44,7 @@
 #include "datum_pow.h"
 #include "datum_protocol.h"
 #include "datum_protocol_internal.h"
+#include <jansson.h>
 #include "datum_stratum.h"
 #include "datum_stratum_dupes.h"
 #include "datum_utils.h"
@@ -1557,6 +1558,30 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 			datum_test(f.miner.stratum_job_diffs[0] == (UINT64_C(1) << 20));
 		}
 		datum_test(f.miner.stratum_job_commit_diffs[0] == (UINT64_C(1) << 20));
+		pool_min_close(&f);
+	}
+
+	// datum.capabilities reports the features this Gateway has, and whether each is on.
+	for (int below = 0; below <= 1; ++below) {
+		char caps[] = "{\"id\":7,\"method\":\"datum.capabilities\",\"params\":[]}";
+		if (!pool_min_open(&f, below)) continue;
+		datum_config.stratum_v1_password_difficulty = !below;
+		(void)pool_min_take_output(&f);
+		datum_test(datum_stratum_v1_socket_thread_client_cmd(f.client, caps) == 0);
+		out = pool_min_take_output(&f);
+		json_error_t err;
+		json_t * const reply = json_loads(out, JSON_DISABLE_EOF_CHECK, &err);
+		datum_test(reply != NULL);
+		json_t * const result = reply ? json_object_get(reply, "result") : NULL;
+		json_t * const feats = result ? json_object_get(result, "features") : NULL;
+		datum_test(reply && json_integer_value(json_object_get(reply, "id")) == 7);
+		datum_test(feats && json_is_true(json_object_get(feats, "reject_tls_probe")));
+		datum_test(feats && json_is_boolean(json_object_get(feats, "vardiff_below_pool_min")) &&
+			json_boolean_value(json_object_get(feats, "vardiff_below_pool_min")) == (bool)below);
+		datum_test(feats && json_boolean_value(json_object_get(feats, "password_difficulty")) == !below);
+		datum_test(result && !strcmp(json_string_value(json_object_get(result, "algo")) ?: "", "blake2b"));
+		datum_test(result && json_is_integer(json_object_get(result, "pool_min_diff")));
+		json_decref(reply);
 		pool_min_close(&f);
 	}
 

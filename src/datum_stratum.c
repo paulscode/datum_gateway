@@ -1627,6 +1627,54 @@ void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw) {
 	}
 }
 
+// datum.capabilities: what this Gateway supports, and which of those features are switched
+// on, for tools that point miners at it (Pickhash checks it before renting). Not a Stratum
+// standard method; a Gateway without it answers "Method not found", which is itself the
+// answer: none of these features. A feature listed with false is supported but turned off.
+//
+//   {"gateway":"v0.5.0-beta/<commit>","algo":"blake2b",
+//    "features":{"vardiff_below_pool_min":true,"password_difficulty":true,"reject_tls_probe":true},
+//    "pooled":true,"pool_min_diff":1048576}
+//
+// pool_min_diff is the pool's current minimum in the same difficulty units as
+// mining.set_difficulty; 0 when not mining pooled.
+int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id) {
+	json_t * const result = json_object();
+	json_t * const features = json_object();
+	if (!result || !features) {
+		json_decref(result);
+		json_decref(features);
+		send_error_to_client(c, id, "[-1,\"Out of memory\",null]");
+		return 0;
+	}
+	char gateway[160];
+	snprintf(gateway, sizeof(gateway), "%s/%s", DATUM_PROTOCOL_VERSION, GIT_COMMIT_HASH);
+	json_object_set_new(result, "gateway", json_string(gateway));
+	json_object_set_new(result, "algo", json_string("blake2b"));
+	json_object_set_new(features, "vardiff_below_pool_min", json_boolean(datum_config.stratum_v1_vardiff_below_pool_min));
+	json_object_set_new(features, "password_difficulty", json_boolean(datum_config.stratum_v1_password_difficulty));
+	json_object_set_new(features, "reject_tls_probe", json_true());
+	json_object_set_new(result, "features", features);
+	const bool pooled = datum_protocol_is_active();
+	json_object_set_new(result, "pooled", json_boolean(pooled));
+	json_object_set_new(result, "pool_min_diff", json_integer(pooled ? (json_int_t)datum_config.override_vardiff_min : 0));
+
+	char * const body = json_dumps(result, JSON_COMPACT);
+	json_decref(result);
+	if (!body) {
+		send_error_to_client(c, id, "[-1,\"Out of memory\",null]");
+		return 0;
+	}
+	char idbuf[160];
+	stratum_rpc_id_text(c, id, idbuf, sizeof(idbuf));
+	char s[1024];
+	snprintf(s, sizeof(s), "{\"error\":null,\"id\":%s,\"result\":%s}\n", idbuf, body);
+	free(body);
+	datum_socket_send_string_to_client(c, s);
+	stratum_rpc_id_clear(c);
+	return 0;
+}
+
 int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj) {
 	char s[256];
 	const char *username_s;
@@ -2089,6 +2137,14 @@ int datum_stratum_v1_socket_thread_client_cmd(T_DATUM_CLIENT_DATA *c, char *line
 			}
 			if (!strcmp(method, "mining.authorize")) {
 				i = client_mining_authorize(c, id, params_obj);
+				json_decref(j);
+				return i;
+			}
+			[[fallthrough]];
+		}
+		case 'd': {
+			if (!strcmp(method, "datum.capabilities")) {
+				i = client_datum_capabilities(c, id);
 				json_decref(j);
 				return i;
 			}
