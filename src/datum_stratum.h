@@ -280,6 +280,8 @@ typedef struct {
 	uint64_t quickdiff_value;
 	uint8_t quickdiff_target[32];
 	uint64_t quickdiff_commit_value;
+	// The job the current quickdiff notify was sent for; Q shares for any other are refused.
+	uint16_t quickdiff_job_index;
 	// Whether the last job sent was the subsidy-only (new block) version, which a served-only
 	// quickdiff must not leave the miner on.
 	bool last_sent_subsidy_only;

@@ -1469,6 +1469,7 @@ static void pool_min_coinb1_hex(struct pool_min_fixture *f, unsigned char pot, c
 }
 
 void reset_vardiff_stats(T_DATUM_CLIENT_DATA *c);
+bool stratum_get_job(const T_DATUM_MINER_DATA * const m, const json_t * const job_id, T_DATUM_STRATUM_JOB ** const out_job, uint16_t * const out_job_index, bool * const out_quickdiff, bool * const out_empty_work, uint64_t * const out_job_diff, const uint8_t ** const out_job_target, unsigned char * const out_coinbase_index, T_DATUM_SHARE_OUTCOME * const out_reject);
 void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick);
 
 static void datum_stratum_vardiff_below_pool_min_tests(void) {
@@ -1655,8 +1656,48 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		datum_test(datum_blake2b_share_target(t_old, floorPoT(1024)));
 		datum_test(datum_blake2b_share_target(t_new, floorPoT(16384)));
 		datum_test(datum_stratum_share_credit_diff(t_new, 1024, 16384) == 16384);
-		datum_test(datum_stratum_share_credit_diff(t_old, 1024, 16384) == 1024);
+		// Missing the served target: accepted, credited at nothing (unbiased; see the helper).
+		datum_test(datum_stratum_share_credit_diff(t_old, 1024, 16384) == 0);
 		datum_test(datum_stratum_share_credit_diff(t_new, 16384, 1024) == 16384);
+	}
+
+	// A quickdiff (Q) share is only for the job its quickdiff notify was sent for.
+	if (pool_min_open(&f, true)) {
+		char qid[40];
+		T_DATUM_STRATUM_JOB *jout = NULL;
+		uint16_t jidx = 0;
+		bool q = false, empty = false;
+		uint64_t jdiff = 0;
+		const uint8_t *jtarget = NULL;
+		unsigned char cbi = 0;
+		T_DATUM_SHARE_OUTCOME rej;
+		snprintf(qid, sizeof(qid), "Q%s%2.2x", f.job.job_id, (unsigned)datum_stratum_coinbase_index(f.sdata, &f.miner, false));
+		json_t * const jid = json_string(qid);
+		f.miner.quickdiff_value = 4096;
+		f.miner.quickdiff_job_index = 7;
+		datum_test(!stratum_get_job(&f.miner, jid, &jout, &jidx, &q, &empty, &jdiff, &jtarget, &cbi, &rej));
+		f.miner.quickdiff_job_index = 0;
+		datum_test(stratum_get_job(&f.miner, jid, &jout, &jidx, &q, &empty, &jdiff, &jtarget, &cbi, &rej) && q && jdiff == 4096);
+		json_decref(jid);
+		pool_min_close(&f);
+	}
+
+	// A fixed difficulty (fd=) below the pool minimum does not stop vardiff when the option
+	// serves it there, so a miner cannot pin itself to a flood of easy shares.
+	if (pool_min_open(&f, true)) {
+		T_DATUM_MINER_DATA * const m = &f.miner;
+		// The defaults a loaded config would carry (the fixture loads none).
+		datum_config.stratum_v1_vardiff_target_shares_min = 8;
+		datum_config.stratum_v1_vardiff_quickdiff_count = 8;
+		datum_config.stratum_v1_vardiff_quickdiff_delta = 8;
+		m->client_fixed_diff = true;
+		m->current_diff = m->last_sent_diff = 1024;
+		reset_vardiff_stats(f.client);
+		m->share_snap_tsms = m->sdata->loop_tsms - 2000;
+		for (int i = 0; i < 20; ++i) datum_stratum_count_vardiff_share(m, 1024);
+		stratum_update_vardiff(f.client, false);
+		datum_test(m->current_diff > 1024);
+		pool_min_close(&f);
 	}
 
 	// Forwarding: only a share meeting the committed target goes to the pool.

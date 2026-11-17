@@ -844,8 +844,12 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 	uint64_t ms_per_share;
 	uint64_t target_ms_share;
 
-	// the client asked to be held at one difficulty, so there is nothing to vary
-	if (m->client_fixed_diff) return;
+	// the client asked to be held at one difficulty, so there is nothing to vary. Not below
+	// the pool's minimum when vardiff_below_pool_min serves it there: the pool minimum used to
+	// be the floor that stopped a fixed low difficulty from becoming a flood of shares, so
+	// vardiff stays in charge until the miner is at the minimum.
+	if (m->client_fixed_diff &&
+	    !(datum_config.stratum_v1_vardiff_below_pool_min && m->current_diff < datum_config.override_vardiff_min)) return;
 
 	// if we already have a diff change pending, don't do calcs again
 	if (m->current_diff != m->last_sent_diff) return;
@@ -1037,6 +1041,10 @@ bool stratum_get_job(const T_DATUM_MINER_DATA * const m, const json_t * const jo
 	if (!*out_quickdiff) {
 		*out_job_diff = m->stratum_job_diffs[*out_job_index];
 		*out_job_target = m->stratum_job_targets[*out_job_index];
+	} else if (!m->quickdiff_value || *out_job_index != m->quickdiff_job_index) {
+		// A quickdiff share must be for the job its quickdiff notify was sent for. The Q
+		// label alone used to select the quickdiff difficulty for any current job.
+		return false;
 	}
 	
 	*out_reject = DATUM_SHARE_REJECT_MALFORMED;
@@ -1500,11 +1508,9 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	stratum_rpc_id_clear(c);
 	
 	// update connection and gateway-local totals
-	// Credited at the difficulty the share actually meets, up to the one now served: a
-	// miner that applies a new mining.set_difficulty at once, while still on a job sent at
-	// the old one (the served-only quickdiff leaves it there), finds shares at the new
-	// difficulty, and crediting them at the job's would understate its hashrate and hide
-	// them from vardiff.
+	// Credited without bias when a harder difficulty is now served than the job was sent at
+	// (see datum_stratum_share_credit_diff): a miner that applies a new set_difficulty at
+	// once, while still on the older job, is measured at its real rate and seen by vardiff.
 	const uint64_t credit_diff = datum_stratum_share_credit_diff(share_hash, job_diff, m->last_sent_diff);
 	stratum_note_share(m, DATUM_SHARE_ACCEPTED, credit_diff);
 	
@@ -1789,14 +1795,17 @@ unsigned int datum_stratum_coinbase_index(
 	return miner->coinbase_selection;
 }
 
-// The difficulty to credit an accepted share at: the one now served when the share meets it
-// and it is above the job's own, otherwise the job's. Only ever raises, and only to a target
-// the share provably meets.
+// The difficulty to credit an accepted share at. Normally the job's. When a harder difficulty
+// is now served than the job was sent at, the share is credited at the served difficulty if
+// it meets it and at nothing otherwise (it is still accepted). That is unbiased whichever
+// target the miner filtered at: shares meeting the served target arrive at its rate whatever
+// the miner was told, so crediting them at it measures the work exactly. Crediting a share
+// that misses it at the job's difficulty, as well, would count up to twice the work done.
 uint64_t datum_stratum_share_credit_diff(const uint8_t *share_hash, uint64_t job_diff, uint64_t served_diff) {
 	if (served_diff <= job_diff) return job_diff;
 	uint8_t served_target[32];
-	if (!datum_blake2b_share_target(served_target, floorPoT(served_diff))) return job_diff;
-	return compare_hashes(share_hash, served_target) <= 0 ? served_diff : job_diff;
+	if (!datum_blake2b_share_target(served_target, floorPoT(served_diff))) return 0;
+	return compare_hashes(share_hash, served_target) <= 0 ? served_diff : 0;
 }
 
 // Whether a share accepted at the miner's difficulty also meets the difficulty its work was
@@ -1916,12 +1925,17 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	// validating against that job's easier target, so none in flight are rejected, and the next
 	// regular notify carries the new difficulty. quickdiff_active stays set until then so a
 	// miner that only applies set_difficulty on new work cannot trigger repeated jumps.
-	if (quickdiff && j->is_datum_job &&
-	    m->last_sent_stratum_job_index == j->global_index &&
-	    !m->last_sent_subsidy_only &&
-	    floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)) {
-		m->quickdiff_active = true;
-		return 0;
+	if (quickdiff && j->is_datum_job && commit_diff > m->last_sent_diff) {
+		if (m->last_sent_stratum_job_index == j->global_index &&
+		    !m->last_sent_subsidy_only &&
+		    floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)) {
+			m->quickdiff_active = true;
+			return 0;
+		}
+		// A newer job the miner has not had yet: its commitment is pinned at the pool
+		// minimum too, so a quickdiff version of it would be the same work as its regular
+		// version, and sending both makes the miner redo it. Send it as a regular job.
+		quickdiff = false;
 	}
 
 	// if this is a quick diff change, the job is likely identical to one we've already sent
@@ -1935,6 +1949,7 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 		m->quickdiff_active = true;
 		m->quickdiff_value = m->last_sent_diff;
 		m->quickdiff_commit_value = commit_diff;
+		m->quickdiff_job_index = j->global_index;
 		datum_blake2b_share_target(m->quickdiff_target, floorPoT(m->quickdiff_value));
 	}
 	tdiff = floorPoT(commit_diff);
