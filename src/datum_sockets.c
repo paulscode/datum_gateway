@@ -264,6 +264,21 @@ void *datum_threadpool_thread(void *arg) {
 						// null terminate the buffer for simplicity
 						// this set of functions is currently only used for stratum v1-like protocols, but can easily be adopted to others.
 						my->client_data[cidx].buffer[my->client_data[cidx].in_buf+n] = 0;
+
+						// A TLS handshake (record type 0x16) on this plain-text port can never become a
+						// valid line. Left alone it sits in the buffer waiting for a newline, so a client
+						// probing for encrypted stratum hangs until its own timeout. MiningRigRentals'
+						// pool checker does exactly that, then runs out of time for its plain-stratum
+						// fallback and reports a healthy pool as failing. Close at once so the probe
+						// fails fast. Stratum lines start with '{', and PROXY v1 with 'P'.
+						if (my->client_data[cidx].in_buf == 0 && (unsigned char)my->client_data[cidx].buffer[0] == 0x16) {
+							DLOG_DEBUG("Thread %03d --- Closing fd %d: TLS handshake on a plain stratum port", my->thread_id, my->client_data[cidx].fd);
+							epoll_ctl(my->epollfd, EPOLL_CTL_DEL, my->client_data[cidx].fd, NULL);
+							close(my->client_data[cidx].fd);
+							if (my->app->closed_client_func) my->app->closed_client_func(&my->client_data[cidx], "TLS handshake on plain stratum port");
+							datum_socket_thread_client_count_decrement(my, cidx, true);
+							continue;
+						}
 						
 						char *start_line = my->client_data[cidx].buffer;
 						char *end_line = strchr(start_line, '\n');
