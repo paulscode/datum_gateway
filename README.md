@@ -135,6 +135,8 @@ Note that the API/web admin password is also used for preventing CSRF attacks, s
 
 You should review the [documentation on usernames](doc/usernames.md) next.
 If your miners need to run at a difficulty other than the one vardiff picks for them, enable `stratum.password_difficulty` and see the [documentation on passwords](doc/passwords.md).
+
+If your pool's minimum difficulty is far above what your miners suit (common behind a busy Gateway, or with rented rigs), enable `stratum.vardiff_below_pool_min` and see [its documentation](doc/vardiff_below_pool_min.md).
 If you run firmware with a 32-bit extranonce2, such as the Obelisk SC1 Gen 2, see the [documentation on the extranonce split](doc/extranonce.md).
 Once you have everything running, you can point miners at the Gateway.
 
