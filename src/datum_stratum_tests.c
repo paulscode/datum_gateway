@@ -626,6 +626,9 @@ static const char *datum_stratum_test_take(T_DATUM_CLIENT_DATA *c) {
 	return c->w_buffer;
 }
 
+void reset_vardiff_stats(T_DATUM_CLIENT_DATA *c);
+void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick);
+
 static void datum_stratum_vardiff_below_pool_min_tests(void) {
 	const global_config_t saved = datum_config;
 	T_DATUM_STRATUM_JOB * const job = datum_stratum_test_pooled_job();
@@ -703,6 +706,35 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		datum_test(m->stratum_job_commit_diffs[0] == pool_min);
 		datum_stratum_test_client_free(c);
 	}
+
+	// Vardiff measures the difficulty now served (see datum_stratum_count_vardiff_share).
+	datum_config.stratum_v1_vardiff_below_pool_min = true;
+	c = datum_stratum_pool_min_client(job);
+	m = c->app_client_data;
+	m->sdata->loop_tsms = 1000000;
+	m->share_count_since_snap = 250;
+	m->share_count_old_diff_since_snap = 3;
+	m->current_diff = 16384;
+	datum_test(send_mining_set_difficulty(c) == 0);
+	datum_test(m->share_count_since_snap == 0 && m->share_count_old_diff_since_snap == 0);
+	datum_stratum_count_vardiff_share(m, 8192);
+	datum_test(m->share_count_since_snap == 0 && m->share_count_old_diff_since_snap == 1);
+	datum_stratum_count_vardiff_share(m, 16384);
+	datum_test(m->share_count_since_snap == 1 && m->share_diff_since_snap == 16384);
+	reset_vardiff_stats(c);
+	m->share_snap_tsms = m->sdata->loop_tsms - 2000;
+	for (int i = 0; i < 9; ++i) datum_stratum_count_vardiff_share(m, 8192);
+	stratum_update_vardiff(c, false);
+	datum_test(m->current_diff == 16384);
+	m->share_snap_tsms = m->sdata->loop_tsms - 70000;
+	stratum_update_vardiff(c, true);
+	datum_test(m->current_diff == 16384);
+	reset_vardiff_stats(c);
+	m->share_snap_tsms = m->sdata->loop_tsms - 70000;
+	stratum_update_vardiff(c, true);
+	datum_test(m->current_diff == 8192);
+	(void)datum_stratum_test_take(c);
+	datum_stratum_test_client_free(c);
 
 	// Forwarding: only a share meeting the committed target goes to the pool.
 	unsigned char served[32], committed[32];
