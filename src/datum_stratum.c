@@ -1157,6 +1157,8 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	}
 	
 	const uint64_t job_diff = quickdiff ? m->quickdiff_value : m->stratum_job_diffs[g_job_index];
+	// The difficulty the job's work was committed to; above job_diff only under vardiff_below_pool_min.
+	const uint64_t commit_diff = quickdiff ? m->quickdiff_commit_value : m->stratum_job_commit_diffs[g_job_index];
 	
 	// construct block header
 	bver = job->version_uint;
@@ -1265,9 +1267,10 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		} else {
 			pk_u16le(full_cb_txn, cb->coinb1_len - 2, 0xAEBB);
 		}
-		full_cb_txn[job->target_pot_index] = floorPoT(m->quickdiff_value);
+		full_cb_txn[job->target_pot_index] = floorPoT(m->quickdiff_commit_value ? m->quickdiff_commit_value : m->quickdiff_value);
 	} else {
-		full_cb_txn[job->target_pot_index] = floorPoT(m->stratum_job_diffs[g_job_index]);
+		const uint64_t cd = m->stratum_job_commit_diffs[g_job_index];
+		full_cb_txn[job->target_pot_index] = floorPoT(cd ? cd : m->stratum_job_diffs[g_job_index]);
 	}
 	
 	if ((job->merklebranch_count) && (!empty_work)) {
@@ -1434,9 +1437,17 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		return 0;
 	}
 	
+	// Only a share that meets the job's committed target goes to the pool. Under
+	// vardiff_below_pool_min the miner is served an easier target, and a share between the
+	// two is accepted here (so the miner's delivered hashrate is measured accurately) but
+	// never forwarded. Every share that does meet the committed target is forwarded, which
+	// includes every block, so the pool receives exactly the shares it would have from a
+	// miner working at the committed difficulty.
+	const bool forward = datum_stratum_share_forwardable(share_hash, job_diff, commit_diff);
+
 	// work accepted
 	if (!was_block) {
-		if (job->is_datum_job) {
+		if (job->is_datum_job && forward) {
 			// submit via DATUM
 			datum_protocol_pow_submit(c, job, username_s, was_block, empty_work, quickdiff, block_header, job_diff, full_cb_txn, cb, extranonce_bin, coinbase_index);
 		}
@@ -1638,6 +1649,63 @@ int client_mining_configure(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	return 0;
 }
 
+// Whether a share accepted at the miner's difficulty also meets the difficulty its work was
+// committed to, and so may be sent to the pool. Always true unless vardiff_below_pool_min
+// served the miner less than the commitment.
+bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff) {
+	if (commit_diff <= job_diff) return true;
+	unsigned char commit_target[32];
+	const unsigned char pot = floorPoT(commit_diff);
+	if (pot >= 64) return false;
+	get_target_from_diff(commit_target, UINT64_C(1) << pot);
+	return compare_hashes(share_hash, commit_target) <= 0;
+}
+
+// datum.capabilities: what this Gateway supports, and which of those features are switched
+// on, for tools that point miners at it (Pickhash checks it before renting). Not a Stratum
+// standard method; a Gateway without it answers "Method not found", which is itself the
+// answer: none of these features. A feature listed with false is supported but turned off.
+//
+//   {"gateway":"v0.5.1-beta/<commit>","algo":"sha256",
+//    "features":{"vardiff_below_pool_min":true,"password_difficulty":true,"reject_tls_probe":true},
+//    "pooled":true,"pool_min_diff":65536}
+//
+// pool_min_diff is the pool's current minimum in the same difficulty units as
+// mining.set_difficulty; 0 when not mining pooled.
+int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id) {
+	json_t * const result = json_object();
+	json_t * const features = json_object();
+	if (!result || !features) {
+		json_decref(result);
+		json_decref(features);
+		send_error_to_client(c, id, "[-1,\"Out of memory\",null]");
+		return 0;
+	}
+	char gateway[160];
+	snprintf(gateway, sizeof(gateway), "%s/%s", DATUM_PROTOCOL_VERSION, GIT_COMMIT_HASH);
+	json_object_set_new(result, "gateway", json_string(gateway));
+	json_object_set_new(result, "algo", json_string("sha256"));
+	json_object_set_new(features, "vardiff_below_pool_min", json_boolean(datum_config.stratum_v1_vardiff_below_pool_min));
+	json_object_set_new(features, "password_difficulty", json_boolean(datum_config.stratum_v1_password_difficulty));
+	json_object_set_new(features, "reject_tls_probe", json_true());
+	json_object_set_new(result, "features", features);
+	const bool pooled = datum_protocol_is_active();
+	json_object_set_new(result, "pooled", json_boolean(pooled));
+	json_object_set_new(result, "pool_min_diff", json_integer(pooled ? (json_int_t)datum_config.override_vardiff_min : 0));
+
+	char * const body = json_dumps(result, JSON_COMPACT);
+	json_decref(result);
+	if (!body) {
+		send_error_to_client(c, id, "[-1,\"Out of memory\",null]");
+		return 0;
+	}
+	char s[1024];
+	snprintf(s, sizeof(s), "{\"error\":null,\"id\":%"PRIu64",\"result\":%s}\n", id, body);
+	free(body);
+	datum_socket_send_string_to_client(c, s);
+	return 0;
+}
+
 int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj) {
 	char s[256];
 	const char *username_s;
@@ -1740,10 +1808,14 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 		stratum_update_vardiff(c, true);
 	}
 	
-	if (j->is_datum_job) {
+	// Read once: the DATUM thread can change it at any time, and the raise below and the
+	// commitment further down must agree.
+	const uint64_t pool_min_diff = datum_config.override_vardiff_min;
+
+	if (j->is_datum_job && !datum_config.stratum_v1_vardiff_below_pool_min) {
 		// check if our client meets of exceeds the minimum datum diff
-		if (m->current_diff < datum_config.override_vardiff_min) {
-			m->current_diff = datum_config.override_vardiff_min;
+		if (m->current_diff < pool_min_diff) {
+			m->current_diff = pool_min_diff;
 		}
 	}
 	
@@ -1752,16 +1824,28 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	if (m->last_sent_diff != m->current_diff) {
 		send_mining_set_difficulty(c);
 	}
+
+	// The difficulty the work is committed to: the coinbase target byte the pool checks a share
+	// against. Pooled work never commits below the pool minimum, even when
+	// vardiff_below_pool_min serves the miner a lower difficulty; it is what decides which
+	// shares may be sent upstream. Without that option the two are always equal. (A quickdiff
+	// job stays new work either way: its coinb1 ends in the 0x5144/0xAEBB marker.)
+	uint64_t commit_diff = m->last_sent_diff;
+	if (j->is_datum_job && commit_diff < pool_min_diff) {
+		commit_diff = pool_min_diff;
+	}
 	
 	// if this is a quick diff change, the job is likely identical to one we've already sent
 	// in which case, we don't want to clobber the normal target table and reject shares that we shouldn't
 	if (!quickdiff) {
 		get_target_from_diff(m->stratum_job_targets[j->global_index], m->last_sent_diff);
 		m->stratum_job_diffs[j->global_index] = m->last_sent_diff;
+		m->stratum_job_commit_diffs[j->global_index] = commit_diff;
 		m->quickdiff_active = false;
 	} else {
 		m->quickdiff_active = true;
 		m->quickdiff_value = m->last_sent_diff;
+		m->quickdiff_commit_value = commit_diff;
 		get_target_from_diff(m->quickdiff_target, m->quickdiff_value);
 	}
 	
@@ -1809,7 +1893,7 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	
 	// the miner's PoT diff needs to be encoded here.
 	// TODO: Rework job ID to include the target byte.  This is gateway side, and the server doesn't care at all about the SV1 job ID.
-	tdiff = floorPoT(m->last_sent_diff);
+	tdiff = floorPoT(commit_diff);
 	uchar_to_hex(&cb1[j->target_pot_index<<1], tdiff);
 	
 	if (quickdiff) {
@@ -2073,6 +2157,14 @@ int datum_stratum_v1_socket_thread_client_cmd(T_DATUM_CLIENT_DATA *c, char *line
 			}
 			if (!strcmp(method, "mining.authorize")) {
 				i = client_mining_authorize(c, id, params_obj);
+				json_decref(j);
+				return i;
+			}
+			[[fallthrough]];
+		}
+		case 'd': {
+			if (!strcmp(method, "datum.capabilities")) {
+				i = client_datum_capabilities(c, id);
 				json_decref(j);
 				return i;
 			}

@@ -591,7 +591,134 @@ static void datum_stratum_reject_reason_tests(void) {
 	stratum_client_rejected_share_diff = saved_rejected_diff;
 }
 
+// A pooled job whose coinbase target byte sits at index 4 of a 20-byte coinb1 of 0x11s.
+static T_DATUM_STRATUM_JOB *datum_stratum_test_pooled_job(void) {
+	T_DATUM_STRATUM_JOB * const j = calloc(1, sizeof(*j));
+	assert(j);
+	j->is_datum_job = true;
+	strcpy(j->job_id, "0000000000c0de");
+	memset(j->prevhash, '0', 64);
+	strcpy(j->version, "20000000");
+	strcpy(j->nbits, "1d00ffff");
+	strcpy(j->ntime, "6625406b");
+	strcpy(j->merklebranches_full, "[]");
+	j->target_pot_index = 4;
+	j->coinbase[0].coinb1_len = 20;
+	memset(j->coinbase[0].coinb1_bin, 0x11, 20);
+	memset(j->coinbase[0].coinb1, '1', 40);
+	memset(j->coinbase[0].coinb2, '2', 16);
+	return j;
+}
+
+// A connection that has subscribed (and been told 1024) to pooled work whose pool minimum,
+// 2^20, is far above the local floor.
+static T_DATUM_CLIENT_DATA *datum_stratum_pool_min_client(T_DATUM_STRATUM_JOB *job) {
+	T_DATUM_CLIENT_DATA * const c = datum_stratum_test_client();
+	T_DATUM_MINER_DATA * const m = c->app_client_data;
+	m->sdata->cur_stratum_job = job;
+	m->current_diff = m->last_sent_diff = 1024;
+	return c;
+}
+
+static const char *datum_stratum_test_take(T_DATUM_CLIENT_DATA *c) {
+	c->w_buffer[c->out_buf] = 0;
+	c->out_buf = 0;
+	return c->w_buffer;
+}
+
+static void datum_stratum_vardiff_below_pool_min_tests(void) {
+	const global_config_t saved = datum_config;
+	T_DATUM_STRATUM_JOB * const job = datum_stratum_test_pooled_job();
+	const uint64_t pool_min = UINT64_C(1) << 20;
+	datum_config.stratum_v1_vardiff_min = 1024;
+	datum_config.override_vardiff_min = pool_min;
+	datum_config.stratum_v1_vardiff_target_shares_min = 1;
+	const char *out;
+	// coinb1 as sent: target byte 0x14 (2^20) at index 4, whatever the miner is served.
+	const char * const committed_cb1 = "\"1111111114111111";
+
+	// Off (the default): the miner is raised to the pool minimum, as before.
+	datum_config.stratum_v1_vardiff_below_pool_min = false;
+	T_DATUM_CLIENT_DATA *c = datum_stratum_pool_min_client(job);
+	T_DATUM_MINER_DATA *m = c->app_client_data;
+	datum_test(send_mining_notify(c, true, false, false) == 0);
+	out = datum_stratum_test_take(c);
+	datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[1048576]") != NULL);
+	datum_test(m->stratum_job_diffs[0] == pool_min);
+	datum_test(m->stratum_job_commit_diffs[0] == pool_min);
+	datum_test(strstr(out, committed_cb1) != NULL);
+	datum_stratum_test_client_free(c);
+
+	// On: the miner keeps its own difficulty, and the work is still committed to the minimum.
+	datum_config.stratum_v1_vardiff_below_pool_min = true;
+	c = datum_stratum_pool_min_client(job);
+	m = c->app_client_data;
+	datum_test(send_mining_notify(c, true, false, false) == 0);
+	out = datum_stratum_test_take(c);
+	datum_test(strstr(out, "mining.set_difficulty") == NULL);
+	datum_test(m->stratum_job_diffs[0] == 1024);
+	datum_test(m->stratum_job_commit_diffs[0] == pool_min);
+	datum_test(strstr(out, committed_cb1) != NULL);
+
+	// A quickdiff stays new work (the 0x5144 marker ends coinb1) and keeps the commitment.
+	m->current_diff = 16384;
+	datum_test(send_mining_notify(c, true, true, false) == 0);
+	out = datum_stratum_test_take(c);
+	datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[16384]") != NULL);
+	datum_test(strstr(out, "\"mining.notify\",\"params\":[\"Q") != NULL);
+	datum_test(strstr(out, "11111111111111114451\"") != NULL);
+	datum_test(strstr(out, committed_cb1) != NULL);
+	datum_test(m->quickdiff_value == 16384);
+	datum_test(m->quickdiff_commit_value == pool_min);
+
+	// datum.capabilities reports the feature, switched on.
+	datum_test(client_datum_capabilities(c, 9) == 0);
+	{
+		json_error_t err;
+		json_t * const reply = json_loads(datum_stratum_test_take(c), JSON_DISABLE_EOF_CHECK, &err);
+		json_t * const result = reply ? json_object_get(reply, "result") : NULL;
+		json_t * const feats = result ? json_object_get(result, "features") : NULL;
+		datum_test(reply && json_integer_value(json_object_get(reply, "id")) == 9);
+		datum_test(result && !strcmp(json_string_value(json_object_get(result, "algo")) ?: "", "sha256"));
+		datum_test(feats && json_is_true(json_object_get(feats, "vardiff_below_pool_min")));
+		datum_test(feats && json_is_true(json_object_get(feats, "reject_tls_probe")));
+		datum_test(result && json_is_integer(json_object_get(result, "pool_min_diff")));
+		json_decref(reply);
+	}
+	datum_stratum_test_client_free(c);
+
+	// A password difficulty below the pool minimum is served when the option is on, and
+	// overridden by the minimum when it is off. The commitment is the minimum either way.
+	datum_config.stratum_v1_password_difficulty = true;
+	for (int below = 0; below <= 1; ++below) {
+		datum_config.stratum_v1_vardiff_below_pool_min = below;
+		c = datum_stratum_test_client();
+		m = c->app_client_data;
+		m->sdata->cur_stratum_job = job;
+		datum_stratum_apply_password_opts(m, "d=65536");
+		datum_test(client_mining_subscribe(c, 8, NULL) == 0);
+		(void)datum_stratum_test_take(c);
+		datum_test(send_mining_notify(c, true, false, false) == 0);
+		datum_test(m->stratum_job_diffs[0] == (below ? 65536 : pool_min));
+		datum_test(m->stratum_job_commit_diffs[0] == pool_min);
+		datum_stratum_test_client_free(c);
+	}
+
+	// Forwarding: only a share meeting the committed target goes to the pool.
+	unsigned char served[32], committed[32];
+	get_target_from_diff(served, 1024);
+	get_target_from_diff(committed, pool_min);
+	datum_test(datum_stratum_share_forwardable(committed, 1024, pool_min));
+	datum_test(!datum_stratum_share_forwardable(served, 1024, pool_min));
+	datum_test(datum_stratum_share_forwardable(served, 1024, 1024));
+	datum_test(datum_stratum_share_forwardable(served, 1024, 0));
+
+	free(job);
+	datum_config = saved;
+}
+
 void datum_stratum_tests(void) {
+	datum_stratum_vardiff_below_pool_min_tests();
 	datum_stratum_reject_reason_tests();
 	datum_stratum_request_min_diff_tests();
 	datum_stratum_password_opts_tests();
