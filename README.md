@@ -72,6 +72,8 @@ See [INSTALL.md](doc/INSTALL.md) for requirements, installation, and configurati
 For pooled mining, also review the [username and payout-address documentation](doc/usernames.md).
 To let miners ask for a minimum difficulty, including through the Stratum password where nothing else can be set, see [minimum difficulty requests](doc/passwords.md).
 
+If your pool's minimum difficulty is far above what your miners suit (common behind a busy Gateway, or with rented rigs), enable `stratum.vardiff_below_pool_min` and see [its documentation](doc/vardiff_below_pool_min.md).
+
 ## External information
 
 Learn more about DATUM from its creator, Jason Hughes:
