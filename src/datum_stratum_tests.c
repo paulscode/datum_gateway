@@ -729,6 +729,12 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 	m->share_snap_tsms = m->sdata->loop_tsms - 70000;
 	stratum_update_vardiff(c, true);
 	datum_test(m->current_diff == 16384);
+	datum_test(m->share_count_old_diff_since_snap == 0);
+	// ...and a miner that then finds nothing is stepped down a minute later, as before.
+	m->share_snap_tsms = m->sdata->loop_tsms - 70000;
+	stratum_update_vardiff(c, true);
+	datum_test(m->current_diff == 8192);
+	m->current_diff = m->last_sent_diff = 16384;
 	reset_vardiff_stats(c);
 	m->share_snap_tsms = m->sdata->loop_tsms - 70000;
 	stratum_update_vardiff(c, true);

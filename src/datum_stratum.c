@@ -819,11 +819,17 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 	
 	if (!m->share_count_since_snap) {
 		// no shares since last snap
-		// Shares from an easier, older job are still arriving: the miner is not silent, its
-		// shares at the current difficulty just have not started yet. Wait for them.
-		if (m->share_count_old_diff_since_snap) return;
 		// is it because our diff is way too high?
 		if (delta_tsms > 60000) {
+			// Only shares from an easier, older job arrived in this minute: the miner is
+			// not silent, its shares at the current difficulty just had not started yet.
+			// Give it one fresh minute rather than stepping down. Clearing the count here
+			// is what bounds this: a miner that then finds nothing at all is still stepped
+			// down a minute later, as before.
+			if (m->share_count_old_diff_since_snap) {
+				reset_vardiff_stats(c);
+				return;
+			}
 			// 60s with no shares seems sufficient to bump diff down next round.
 			m->current_diff = m->current_diff >> 1;
 			if (m->current_diff < m->forced_high_min_diff) {
@@ -1829,8 +1835,13 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	}
 	
 	// Read once: the DATUM thread can change it at any time, and the raise below and the
-	// commitment further down must agree.
-	const uint64_t pool_min_diff = datum_config.override_vardiff_min;
+	// commitment further down must agree. Rounded up to a power of two here as well: the
+	// protocol thread stores the pool's raw value before rounding it, and a commitment's
+	// target byte below the pool's real minimum would get every share rejected.
+	uint64_t pool_min_diff = datum_config.override_vardiff_min;
+	if (pool_min_diff && roundDownToPowerOfTwo_64(pool_min_diff) != pool_min_diff) {
+		pool_min_diff = roundDownToPowerOfTwo_64(pool_min_diff) << 1;
+	}
 
 	if (j->is_datum_job && !datum_config.stratum_v1_vardiff_below_pool_min) {
 		// check if our client meets of exceeds the minimum datum diff
