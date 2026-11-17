@@ -280,6 +280,9 @@ typedef struct {
 	uint64_t quickdiff_value;
 	uint8_t quickdiff_target[32];
 	uint64_t quickdiff_commit_value;
+	// Whether the last job sent was the subsidy-only (new block) version, which a served-only
+	// quickdiff must not leave the miner on.
+	bool last_sent_subsidy_only;
 	
 	uint64_t forced_high_min_diff;
 	
@@ -324,6 +327,7 @@ bool datum_stratum_extranonce2_zero_extend(const T_DATUM_MINER_DATA *m, unsigned
 
 int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id);
 void datum_stratum_count_vardiff_share(T_DATUM_MINER_DATA *m, uint64_t job_diff);
+uint64_t datum_stratum_share_credit_diff(const uint8_t *share_hash, uint64_t job_diff, uint64_t served_diff);
 bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff);
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block);
 void update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, int job_state);

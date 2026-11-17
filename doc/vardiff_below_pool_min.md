@@ -18,7 +18,11 @@ changing what the pool receives:
 }
 ```
 
-It is off by default. With it off, the Gateway behaves exactly as before.
+It is off by default. With it off, miners are raised to the pool's minimum as before. Two
+vardiff fixes from the same change apply either way: vardiff measures the rate at the
+difficulty it now serves (shares from older, easier jobs are accepted and credited at the
+difficulty they meet, but not counted toward the rate as if they were at the new one), and
+it starts measuring afresh whenever it sends a new difficulty.
 
 ## What changes
 

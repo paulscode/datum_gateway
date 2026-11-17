@@ -1532,6 +1532,24 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		pool_min_close(&f);
 	}
 
+	// After a subsidy-only (new block) job, a served-only quickdiff sends new work instead of
+	// leaving the miner on the empty version until the next regular notify.
+	if (pool_min_open(&f, true)) {
+		(void)pool_min_take_output(&f);
+		f.job.subsidy_only_coinbase = f.job.coinbase[0];
+		f.job.subsidy_only_coinbase.coinb2_bin[0] ^= 0xaa;
+		datum_test(send_mining_notify(f.client, true, false, true) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"N") != NULL);
+		datum_test(f.miner.last_sent_subsidy_only);
+		f.miner.current_diff = 16384;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "mining.notify") != NULL);
+		datum_test(!f.miner.last_sent_subsidy_only);
+		pool_min_close(&f);
+	}
+
 	// Off: quickdiff behaves exactly as before (the commitment always moves with it).
 	if (pool_min_open(&f, false)) {
 		(void)pool_min_take_output(&f);
@@ -1628,6 +1646,17 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		stratum_update_vardiff(f.client, true);
 		datum_test(m->current_diff == 8192);
 		pool_min_close(&f);
+	}
+
+	// Credit: a share is credited at the difficulty now served when it meets it (a miner that
+	// applied a new set_difficulty while still on the older job), otherwise at the job's.
+	{
+		uint8_t t_old[32], t_new[32];
+		datum_test(datum_blake2b_share_target(t_old, floorPoT(1024)));
+		datum_test(datum_blake2b_share_target(t_new, floorPoT(16384)));
+		datum_test(datum_stratum_share_credit_diff(t_new, 1024, 16384) == 16384);
+		datum_test(datum_stratum_share_credit_diff(t_old, 1024, 16384) == 1024);
+		datum_test(datum_stratum_share_credit_diff(t_new, 16384, 1024) == 16384);
 	}
 
 	// Forwarding: only a share meeting the committed target goes to the pool.
