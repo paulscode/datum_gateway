@@ -18,7 +18,11 @@ changing what the pool receives:
 }
 ```
 
-It is off by default. With it off, the Gateway behaves exactly as before.
+It is off by default. With it off, miners are raised to the pool's minimum as before. Two
+vardiff fixes from the same change apply either way: vardiff measures the rate at the
+difficulty it now serves (shares from older, easier jobs are accepted and credited at the
+difficulty they meet, but not counted toward the rate as if they were at the new one), and
+it starts measuring afresh whenever it sends a new difficulty.
 
 ## What changes
 
@@ -26,7 +30,7 @@ For pooled work, every job now has two difficulties:
 
 | | Set from | Used for |
 | --- | --- | --- |
-| **Served** | the miner's own vardiff (and `d=`/`fd=` when `stratum.password_difficulty` is on) | `mining.set_difficulty`, and the Gateway's local acceptance of the miner's shares |
+| **Served** | the miner's own vardiff (and `d=` when `stratum.password_difficulty` is on) | `mining.set_difficulty`, and the Gateway's local acceptance of the miner's shares |
 | **Committed** | the served difficulty, but never below the pool's minimum | the coinbase target byte the pool checks a share against (on BLAKE2b also the work commitment and its ABW bits) |
 
 Without the option the two are always equal. With it, the served difficulty may be lower.

@@ -742,6 +742,27 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 	(void)datum_stratum_test_take(c);
 	datum_stratum_test_client_free(c);
 
+	// A pool minimum that is not a power of two is rounded up before it is committed, as the
+	// pool applies it: 3*2^18 commits at 2^20, never at 2^19.
+	datum_config.override_vardiff_min = 3 * (UINT64_C(1) << 18);
+	datum_test(datum_stratum_pool_min_diff() == pool_min);
+	c = datum_stratum_pool_min_client(job);
+	m = c->app_client_data;
+	datum_test(send_mining_notify(c, true, false, false) == 0);
+	datum_test(m->stratum_job_commit_diffs[0] == pool_min);
+	datum_test(strstr(datum_stratum_test_take(c), committed_cb1) != NULL);
+	datum_stratum_test_client_free(c);
+	datum_config.override_vardiff_min = pool_min;
+
+	// Credit: a share is credited at the difficulty now served when it meets it.
+	{
+		unsigned char t_old[32], t_new[32];
+		get_target_from_diff(t_old, 1024);
+		get_target_from_diff(t_new, 16384);
+		datum_test(datum_stratum_share_credit_diff(t_new, 1024, 16384) == 16384);
+		datum_test(datum_stratum_share_credit_diff(t_old, 1024, 16384) == 1024);
+	}
+
 	// Forwarding: only a share meeting the committed target goes to the pool.
 	unsigned char served[32], committed[32];
 	get_target_from_diff(served, 1024);

@@ -287,6 +287,8 @@ void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw);
 const char *datum_stratum_mod_username(const char *username_s, char *username_buf, size_t username_buf_sz, uint16_t share_rnd, const char *modname, size_t modname_len);
 
 void datum_stratum_count_vardiff_share(T_DATUM_MINER_DATA *m, uint64_t job_diff);
+uint64_t datum_stratum_pool_min_diff(void);
+uint64_t datum_stratum_share_credit_diff(const uint8_t *share_hash, uint64_t job_diff, uint64_t served_diff);
 bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff);
 int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id);
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block);

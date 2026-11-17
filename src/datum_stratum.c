@@ -823,9 +823,10 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 		if (delta_tsms > 60000) {
 			// Only shares from an easier, older job arrived in this minute: the miner is
 			// not silent, its shares at the current difficulty just had not started yet.
-			// Give it one fresh minute rather than stepping down. Clearing the count here
-			// is what bounds this: a miner that then finds nothing at all is still stepped
-			// down a minute later, as before.
+			// Start a fresh minute rather than stepping down. The count is cleared here, so
+			// this holds only while old-job shares keep arriving (they stop at the next
+			// regular job, or when the old job goes stale); a miner that then finds nothing
+			// at all is stepped down a minute later, as before.
 			if (m->share_count_old_diff_since_snap) {
 				reset_vardiff_stats(c);
 				return;
@@ -1485,12 +1486,17 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	datum_socket_send_string_to_client(c, s);
 	
 	// update connection and gateway-local totals
-	stratum_note_share(m, DATUM_SHARE_ACCEPTED, job_diff);
+	// Credited at the difficulty the share actually meets, up to the one now served: a
+	// miner that applies a new mining.set_difficulty at once, while still on a job sent at
+	// the old one, finds shares at the new difficulty, and crediting them at the job's would
+	// understate its hashrate and hide them from vardiff.
+	const uint64_t credit_diff = datum_stratum_share_credit_diff(share_hash, job_diff, m->last_sent_diff);
+	stratum_note_share(m, DATUM_SHARE_ACCEPTED, credit_diff);
 	
 	// update since-snap totals
-	datum_stratum_count_vardiff_share(m, job_diff);
+	datum_stratum_count_vardiff_share(m, credit_diff);
 	
-	stratum_update_miner_stats_accepted(c, job_diff);
+	stratum_update_miner_stats_accepted(c, credit_diff);
 	stratum_update_vardiff(c,false);
 	
 	return 0;
@@ -1675,6 +1681,25 @@ int client_mining_configure(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	return 0;
 }
 
+// The pool's minimum, rounded up to a power of two. The protocol thread stores the pool's
+// raw value before rounding it, so every reader rounds it again; a commitment below the
+// pool's real minimum would get its shares rejected.
+uint64_t datum_stratum_pool_min_diff(void) {
+	uint64_t d = datum_config.override_vardiff_min;
+	if (d && roundDownToPowerOfTwo_64(d) != d) d = roundDownToPowerOfTwo_64(d) << 1;
+	return d;
+}
+
+// The difficulty to credit an accepted share at: the one now served when the share meets it
+// and it is above the job's own, otherwise the job's. Only ever raises, and only to a target
+// the share provably meets.
+uint64_t datum_stratum_share_credit_diff(const uint8_t *share_hash, uint64_t job_diff, uint64_t served_diff) {
+	if (served_diff <= job_diff) return job_diff;
+	unsigned char served_target[32];
+	get_target_from_diff(served_target, served_diff);
+	return compare_hashes(share_hash, served_target) <= 0 ? served_diff : job_diff;
+}
+
 // Whether a share accepted at the miner's difficulty also meets the difficulty its work was
 // committed to, and so may be sent to the pool. Always true unless vardiff_below_pool_min
 // served the miner less than the commitment.
@@ -1717,7 +1742,7 @@ int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id) {
 	json_object_set_new(result, "features", features);
 	const bool pooled = datum_protocol_is_active();
 	json_object_set_new(result, "pooled", json_boolean(pooled));
-	json_object_set_new(result, "pool_min_diff", json_integer(pooled ? (json_int_t)datum_config.override_vardiff_min : 0));
+	json_object_set_new(result, "pool_min_diff", json_integer(pooled ? (json_int_t)datum_stratum_pool_min_diff() : 0));
 
 	char * const body = json_dumps(result, JSON_COMPACT);
 	json_decref(result);
@@ -1834,14 +1859,9 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 		stratum_update_vardiff(c, true);
 	}
 	
-	// Read once: the DATUM thread can change it at any time, and the raise below and the
-	// commitment further down must agree. Rounded up to a power of two here as well: the
-	// protocol thread stores the pool's raw value before rounding it, and a commitment's
-	// target byte below the pool's real minimum would get every share rejected.
-	uint64_t pool_min_diff = datum_config.override_vardiff_min;
-	if (pool_min_diff && roundDownToPowerOfTwo_64(pool_min_diff) != pool_min_diff) {
-		pool_min_diff = roundDownToPowerOfTwo_64(pool_min_diff) << 1;
-	}
+	// Read once (the DATUM thread can change it at any time, and the raise below and the
+	// commitment further down must agree), rounded as the pool will apply it.
+	const uint64_t pool_min_diff = datum_stratum_pool_min_diff();
 
 	if (j->is_datum_job && !datum_config.stratum_v1_vardiff_below_pool_min) {
 		// check if our client meets of exceeds the minimum datum diff
