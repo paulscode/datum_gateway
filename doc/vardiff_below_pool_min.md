@@ -77,7 +77,8 @@ method, and it needs no subscribe or authorize:
 
 A feature listed with `false` is supported but switched off. A Gateway without the method
 answers `Method not found`, which means none of these features. `pool_min_diff` is the pool's
-current minimum, in `mining.set_difficulty` units, or `0` when not mining pooled.
+current minimum as DATUM's integer difficulty (on BLAKE2b, `mining.set_difficulty` sends 65535/65536
+of it), or `0` when not mining pooled. Send `"params":[]`: a request without it is dropped.
 
 ## TLS probes
 

@@ -859,11 +859,17 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 	
 	if (!m->share_count_since_snap) {
 		// no shares since last snap
-		// Shares from an easier, older job are still arriving: the miner is not silent, its
-		// shares at the current difficulty just have not started yet. Wait for them.
-		if (m->share_count_old_diff_since_snap) return;
 		// is it because our diff is way too high?
 		if (delta_tsms > 60000) {
+			// Only shares from an easier, older job arrived in this minute: the miner is
+			// not silent, its shares at the current difficulty just had not started yet.
+			// Give it one fresh minute rather than stepping down. Clearing the count here
+			// is what bounds this: a miner that then finds nothing at all is still stepped
+			// down a minute later, as before.
+			if (m->share_count_old_diff_since_snap) {
+				reset_vardiff_stats(c);
+				return;
+			}
 			// 60s with no shares seems sufficient to bump diff down next round.
 			m->current_diff = m->current_diff >> 1;
 			if (m->current_diff < m->forced_high_min_diff) {
@@ -1656,8 +1662,8 @@ void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw) {
 //    "features":{"vardiff_below_pool_min":true,"password_difficulty":true,"reject_tls_probe":true},
 //    "pooled":true,"pool_min_diff":1048576}
 //
-// pool_min_diff is the pool's current minimum in the same difficulty units as
-// mining.set_difficulty; 0 when not mining pooled.
+// pool_min_diff is the pool's current minimum as DATUM's integer difficulty (mining.set_difficulty
+// sends 65535/65536 of it on BLAKE2b, so compare with that tolerance); 0 when not mining pooled.
 int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id) {
 	json_t * const result = json_object();
 	json_t * const features = json_object();

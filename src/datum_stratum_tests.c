@@ -1610,10 +1610,18 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		for (int i = 0; i < 9; ++i) datum_stratum_count_vardiff_share(m, 8192);
 		stratum_update_vardiff(f.client, false);
 		datum_test(m->current_diff == 16384);
-		// Over a minute with only old-job shares is not silence: no step down.
+		// Over a minute with only old-job shares is not silence: no step down, but the
+		// count is cleared, so it buys one minute at most.
 		m->share_snap_tsms = m->sdata->loop_tsms - 70000;
 		stratum_update_vardiff(f.client, true);
 		datum_test(m->current_diff == 16384);
+		datum_test(m->share_count_old_diff_since_snap == 0);
+		// A miner that then finds nothing at all is stepped down a minute later, as before
+		// (seen in review: a single in-flight old share used to block this indefinitely).
+		m->share_snap_tsms = m->sdata->loop_tsms - 70000;
+		stratum_update_vardiff(f.client, true);
+		datum_test(m->current_diff == 8192);
+		m->current_diff = m->last_sent_diff = 16384;
 		// A minute of true silence still steps down, as before.
 		reset_vardiff_stats(f.client);
 		m->share_snap_tsms = m->sdata->loop_tsms - 70000;
