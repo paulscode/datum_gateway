@@ -1538,6 +1538,28 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		pool_min_close(&f);
 	}
 
+	// With password difficulty on, a rig that asks for d=65536 (what Pickhash sends: the rig's
+	// optimal minimum on MRR) is served exactly that, while its work stays committed to the
+	// pool minimum. With the option off, the pool minimum overrides the request, as before.
+	for (int below = 0; below <= 1; ++below) {
+		char authorize[160];
+		snprintf(authorize, sizeof(authorize), "{\"id\":2,\"method\":\"mining.authorize\",\"params\":[\"w\",\"d=65536\"]}");
+		if (!pool_min_open(&f, below)) continue;
+		datum_config.stratum_v1_password_difficulty = true;
+		(void)pool_min_take_output(&f);
+		datum_test(datum_stratum_v1_socket_thread_client_cmd(f.client, authorize) == 0);
+		out = pool_min_take_output(&f);
+		if (below) {
+			datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[65535]") != NULL);
+			datum_test(f.miner.stratum_job_diffs[0] == 65536);
+		} else {
+			datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[65535]") == NULL);
+			datum_test(f.miner.stratum_job_diffs[0] == (UINT64_C(1) << 20));
+		}
+		datum_test(f.miner.stratum_job_commit_diffs[0] == (UINT64_C(1) << 20));
+		pool_min_close(&f);
+	}
+
 	// Forwarding: only a share meeting the committed target goes to the pool.
 	uint8_t served[32], committed[32];
 	datum_test(datum_blake2b_share_target(served, floorPoT(1024)));
