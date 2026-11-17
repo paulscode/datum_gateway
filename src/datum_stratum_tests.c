@@ -1363,7 +1363,194 @@ static void datum_stratum_password_before_subscribe_tests(void) {
 	datum_config.stratum_v1_password_difficulty = saved_password_difficulty;
 }
 
+// A connection to pooled work while the pool minimum (2^20) is far above the local vardiff
+// floor (1024). Set up by pool_min_open, inspected by the test, torn down by pool_min_close.
+struct pool_min_fixture {
+	T_DATUM_THREAD_DATA *thread;
+	T_DATUM_STRATUM_THREADPOOL_DATA *sdata;
+	T_DATUM_SOCKET_APP app;
+	T_DATUM_TEMPLATE_DATA tdata;
+	T_DATUM_STRATUM_JOB job;
+	T_DATUM_MINER_DATA miner;
+	T_DATUM_CLIENT_DATA *client;
+	global_config_t saved_config;
+	int saved_latest_index;
+	T_DATUM_STRATUM_JOB *saved_job;
+};
+
+// What the miner has been sent since the last call. Valid until the next send, which starts
+// the buffer over.
+static const char *pool_min_take_output(struct pool_min_fixture *f) {
+	f->client->w_buffer[f->client->out_buf] = 0;
+	f->client->out_buf = 0;
+	return f->client->w_buffer;
+}
+
+static bool pool_min_open(struct pool_min_fixture *f, bool below_pool_min) {
+	char subscribe[] = "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[]}";
+	memset(f, 0, sizeof(*f));
+	f->thread = calloc(1, sizeof(*f->thread));
+	f->sdata = calloc(1, sizeof(*f->sdata));
+	datum_test(f->thread != NULL);
+	datum_test(f->sdata != NULL);
+	if (!(f->thread && f->sdata)) {
+		free(f->thread);
+		free(f->sdata);
+		return false;
+	}
+	f->saved_config = datum_config;
+	f->saved_latest_index = global_latest_stratum_job_index;
+	f->saved_job = global_cur_stratum_jobs[0];
+	datum_stratum_test_coinbaser_locks();
+	datum_config.stratum_v1_vardiff_min = 1024;
+	datum_config.override_vardiff_min = UINT64_C(1) << 20;
+	datum_config.stratum_v1_vardiff_below_pool_min = below_pool_min;
+	datum_config.stratum_v1_max_clients_per_thread = 1;
+	datum_config.stratum_v1_vardiff_target_shares_min = 1;
+	datum_config.stratum_v1_share_stale_seconds = 60;
+	datum_config.bitcoind_work_update_seconds = 40;
+
+	f->tdata.version = 0x20000000;
+	f->tdata.height = 12345;
+	f->tdata.bits_uint = 0x1d00ffff;
+	f->tdata.txn_count = 1;
+	f->job.block_template = &f->tdata;
+	f->job.is_datum_job = true;
+	f->job.job_state = JOB_STATE_FULL_NORMAL_WAIT_COINBASER;
+	f->job.tsms = current_time_millis() - 10000;
+	strcpy(f->job.job_id, "0000000000c0de");
+	f->job.target_pot_index = 4;
+	for (int i = 0; i < MAX_COINBASE_TYPES; ++i) {
+		f->job.coinbase[i].coinb1_len = 20;
+		f->job.coinbase[i].coinb2_len = 8;
+		memset(f->job.coinbase[i].coinb1_bin, 0x11 + i, 20);
+		memset(f->job.coinbase[i].coinb2_bin, 0x22, 8);
+	}
+	global_cur_stratum_jobs[0] = &f->job;
+	global_latest_stratum_job_index = 0;
+
+	f->app.max_threads = 1;
+	f->app.max_clients_thread = 1;
+	f->thread->app = &f->app;
+	f->thread->app_thread_data = f->sdata;
+	datum_stratum_v1_socket_thread_init(f->thread);
+	datum_stratum_v1_socket_thread_loop(f->thread);
+
+	f->client = &f->thread->client_data[0];
+	f->client->datum_thread = f->thread;
+	f->client->app_client_data = &f->miner;
+	datum_stratum_v1_socket_thread_client_new(f->client);
+	datum_test(datum_stratum_v1_socket_thread_client_cmd(f->client, subscribe) == 0);
+	return true;
+}
+
+static void pool_min_close(struct pool_min_fixture *f) {
+	T_DATUM_STRATUM_DUPES * const dupes = f->sdata->dupes;
+	if (dupes) free(dupes->ptr);
+	free(dupes);
+	global_cur_stratum_jobs[0] = f->saved_job;
+	global_latest_stratum_job_index = f->saved_latest_index;
+	datum_config = f->saved_config;
+	free(f->sdata);
+	free(f->thread);
+}
+
+// The coinb1 hex a miner must be sent for the fixture's job at this committed pot, using the
+// coinbase the gateway selects for this miner.
+static void pool_min_coinb1_hex(struct pool_min_fixture *f, unsigned char pot, char *hex) {
+	unsigned char commitment[32], coinb1[39];
+	hex[0] = 0;
+	const unsigned int cbi = datum_stratum_coinbase_index(f->sdata, &f->miner, false);
+	if (cbi >= MAX_COINBASE_TYPES) return;
+	if (!datum_stratum_job_blake2b_commitment(&f->job, &f->job.coinbase[cbi], false, pot, commitment, coinb1)) return;
+	for (size_t i = 0; i < sizeof(coinb1); ++i) uchar_to_hex(&hex[i << 1], coinb1[i]);
+	hex[sizeof(coinb1) << 1] = 0;
+}
+
+static void datum_stratum_vardiff_below_pool_min_tests(void) {
+	static struct pool_min_fixture f;
+	char coinb1_hex[128];
+	char nbits[16];
+	const char *out;
+
+	// Off (the default): the miner is raised to the pool minimum, as before.
+	if (pool_min_open(&f, false)) {
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[1048560]") != NULL);
+		datum_test(f.miner.stratum_job_diffs[0] == (UINT64_C(1) << 20));
+		datum_test(f.miner.stratum_job_commit_diffs[0] == (UINT64_C(1) << 20));
+		pool_min_coinb1_hex(&f, floorPoT(UINT64_C(1) << 20), coinb1_hex);
+		datum_test(coinb1_hex[0] && strstr(out, coinb1_hex) != NULL);
+		pool_min_close(&f);
+	}
+
+	// On: the miner is served its own floor, but the work is still committed to the pool minimum.
+	if (pool_min_open(&f, true)) {
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[1023.984375]") != NULL);
+		datum_test(strstr(out, "1048560") == NULL);
+		datum_test(f.miner.stratum_job_diffs[0] == 1024);
+		datum_test(f.miner.stratum_job_commit_diffs[0] == (UINT64_C(1) << 20));
+		pool_min_coinb1_hex(&f, floorPoT(UINT64_C(1) << 20), coinb1_hex);
+		datum_test(coinb1_hex[0] && strstr(out, coinb1_hex) != NULL);
+		// The nbits hint describes the target the miner is asked for, not the commitment.
+		snprintf(nbits, sizeof(nbits), "\"%8.8x\"", datum_blake2b_share_nbits(floorPoT(1024)));
+		datum_test(strstr(out, nbits) != NULL);
+
+		// A quickdiff that only raises the served difficulty (commitment unchanged at the pool
+		// minimum) must not resend the identical work: just the new difficulty goes out, and the
+		// miner's current job keeps its easier target so shares in flight still validate.
+		f.miner.current_diff = 16384;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[16383.75]") != NULL);
+		datum_test(strstr(out, "mining.notify") == NULL);
+		datum_test(f.miner.quickdiff_active);
+		datum_test(f.miner.stratum_job_diffs[0] == 1024);
+
+		// The next regular notify carries the new served difficulty, still committed to the minimum.
+		datum_test(send_mining_notify(f.client, false, false, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "mining.notify") != NULL);
+		datum_test(!f.miner.quickdiff_active);
+		datum_test(f.miner.stratum_job_diffs[0] == 16384);
+		datum_test(f.miner.stratum_job_commit_diffs[0] == (UINT64_C(1) << 20));
+
+		// A quickdiff that lifts the served difficulty above the pool minimum changes the
+		// commitment, so it is new work and is sent as a quickdiff job as usual.
+		f.miner.current_diff = UINT64_C(1) << 22;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"Q") != NULL);
+		datum_test(f.miner.quickdiff_commit_value == (UINT64_C(1) << 22));
+		pool_min_coinb1_hex(&f, floorPoT(UINT64_C(1) << 22), coinb1_hex);
+		datum_test(coinb1_hex[0] && strstr(out, coinb1_hex) != NULL);
+		pool_min_close(&f);
+	}
+
+	// Off: quickdiff behaves exactly as before (the commitment always moves with it).
+	if (pool_min_open(&f, false)) {
+		(void)pool_min_take_output(&f);
+		f.miner.current_diff = UINT64_C(1) << 22;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"Q") != NULL);
+		pool_min_close(&f);
+	}
+
+	// Forwarding: only a share meeting the committed target goes to the pool.
+	uint8_t served[32], committed[32];
+	datum_test(datum_blake2b_share_target(served, floorPoT(1024)));
+	datum_test(datum_blake2b_share_target(committed, floorPoT(UINT64_C(1) << 20)));
+	datum_test(datum_stratum_share_forwardable(committed, 1024, UINT64_C(1) << 20));
+	datum_test(!datum_stratum_share_forwardable(served, 1024, UINT64_C(1) << 20));
+	// With no split (commit == served), every accepted share is forwarded, as before.
+	datum_test(datum_stratum_share_forwardable(served, 1024, 1024));
+	datum_test(datum_stratum_share_forwardable(served, 1024, 0));
+}
+
 void datum_stratum_tests(void) {
+	datum_stratum_vardiff_below_pool_min_tests();
 	datum_stratum_reject_reason_tests();
 	datum_stratum_password_opts_tests();
 	datum_stratum_password_before_subscribe_tests();

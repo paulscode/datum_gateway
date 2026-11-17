@@ -253,6 +253,9 @@ typedef struct {
 	
 	uint8_t stratum_job_targets[MAX_STRATUM_JOBS][32];
 	uint64_t stratum_job_diffs[MAX_STRATUM_JOBS];
+	// Difficulty the job's work is committed to (its coinbase target byte). Equal to
+	// stratum_job_diffs unless vardiff_below_pool_min serves the miner less than the pool minimum.
+	uint64_t stratum_job_commit_diffs[MAX_STRATUM_JOBS];
 	
 	unsigned char coinbase_selection;
 	
@@ -273,6 +276,7 @@ typedef struct {
 	bool quickdiff_active;
 	uint64_t quickdiff_value;
 	uint8_t quickdiff_target[32];
+	uint64_t quickdiff_commit_value;
 	
 	uint64_t forced_high_min_diff;
 	
@@ -315,6 +319,7 @@ const char *datum_stratum_mod_username(const char *username_s, char *username_bu
 void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw);
 bool datum_stratum_extranonce2_zero_extend(const T_DATUM_MINER_DATA *m, unsigned char *extranonce_bin);
 
+bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff);
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block);
 void update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, int job_state);
 void datum_stratum_job_refresh_blake2b(T_DATUM_STRATUM_JOB *s);

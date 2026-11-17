@@ -1255,8 +1255,11 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	// we must encode the current diff directly into the PoW.  This allows remote DATUM servers to accept
 	// our variable difficulty work (subject to the DATUM server provided global minimum)
 	
-	full_cb_txn[job->target_pot_index] = floorPoT(job_diff);
-	
+	// The byte is the job's COMMITTED difficulty, which differs from the miner's job_diff only
+	// under vardiff_below_pool_min (see send_mining_notify).
+	const uint64_t commit_diff = quickdiff ? m->quickdiff_commit_value : m->stratum_job_commit_diffs[g_job_index];
+	full_cb_txn[job->target_pot_index] = floorPoT(commit_diff ? commit_diff : job_diff);
+
 	// time offset
 	ntime = json_array_get(params_obj, 3);
 	ntime_len = json_string_length(ntime);
@@ -1434,8 +1437,16 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		return 0;
 	}
 	
+	// Only a share that meets the job's committed target goes to the pool. Under
+	// vardiff_below_pool_min the miner is served an easier target, and a share between the
+	// two is accepted here (so the miner's delivered hashrate is measured accurately) but
+	// never forwarded. Every share that does meet the committed target is forwarded, which
+	// includes every block candidate the pool could classify, so the pool receives exactly
+	// the shares it would have from a miner working at the committed difficulty.
+	const bool forward = datum_stratum_share_forwardable(share_hash, job_diff, commit_diff);
+
 	// work accepted
-	if (job->is_datum_job && !was_block) {
+	if (job->is_datum_job && !was_block && forward) {
 		const int submitted = datum_protocol_pow_submit(c, job,
 			username_s, false, empty_work, quickdiff, block_header, job_diff, full_cb_txn,
 			full_cb_txn_size, share_hash, cb, extranonce_bin,
@@ -1697,6 +1708,16 @@ unsigned int datum_stratum_coinbase_index(
 	return miner->coinbase_selection;
 }
 
+// Whether a share accepted at the miner's difficulty also meets the difficulty its work was
+// committed to, and so may be sent to the pool. Always true unless vardiff_below_pool_min
+// served the miner less than the commitment.
+bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff) {
+	if (commit_diff <= job_diff) return true;
+	uint8_t commit_target[32];
+	if (!datum_blake2b_share_target(commit_target, floorPoT(commit_diff))) return false;
+	return compare_hashes(share_hash, commit_target) <= 0;
+}
+
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block) {
 	// send the current job to the miner
 	
@@ -1770,32 +1791,64 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 		stratum_update_vardiff(c, true);
 	}
 	
-	if (j->is_datum_job) {
+	// Read once: the DATUM thread can change it at any time, and the raise below and the
+	// commitment further down must agree.
+	const uint64_t pool_min_diff = datum_config.override_vardiff_min;
+
+	if (j->is_datum_job && !datum_config.stratum_v1_vardiff_below_pool_min) {
 		// check if our client meets of exceeds the minimum datum diff
-		if (m->current_diff < datum_config.override_vardiff_min) {
-			m->current_diff = datum_config.override_vardiff_min;
+		if (m->current_diff < pool_min_diff) {
+			m->current_diff = pool_min_diff;
 		}
 	}
-	
+
 	// if we have an updated difficulty to send, send it before we send the notify
 	// applies to quick and normal diff changes
 	if (m->last_sent_diff != m->current_diff) {
 		send_mining_set_difficulty(c);
 	}
-	
+
+	// The difficulty the work is committed to. Pooled work never commits below the pool
+	// minimum, even when vardiff_below_pool_min serves the miner a lower difficulty: the
+	// commitment is what the pool checks a share against, so it is what decides which shares
+	// may be sent upstream. Without that option the two are always equal.
+	uint64_t commit_diff = m->last_sent_diff;
+	if (j->is_datum_job && commit_diff < pool_min_diff) {
+		commit_diff = pool_min_diff;
+	}
+
+	// A quickdiff job is only new work because its committed target byte differs from the
+	// job the miner already holds. When vardiff_below_pool_min holds the commitment at the
+	// pool minimum, a quickdiff that only raises the SERVED difficulty would resend identical
+	// work with clean=true: the miner would redo it and resubmit duplicates. Send just the new
+	// difficulty instead (done above) and leave the miner on its current job. Its shares keep
+	// validating against that job's easier target, so none in flight are rejected, and the next
+	// regular notify carries the new difficulty. quickdiff_active stays set until then so a
+	// miner that only applies set_difficulty on new work cannot trigger repeated jumps.
+	if (quickdiff && j->is_datum_job &&
+	    m->last_sent_stratum_job_index == j->global_index &&
+	    floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)) {
+		m->quickdiff_active = true;
+		return 0;
+	}
+
 	// if this is a quick diff change, the job is likely identical to one we've already sent
 	// in which case, we don't want to clobber the normal target table and reject shares that we shouldn't
 	if (!quickdiff) {
 		datum_blake2b_share_target(m->stratum_job_targets[j->global_index], floorPoT(m->last_sent_diff));
 		m->stratum_job_diffs[j->global_index] = m->last_sent_diff;
+		m->stratum_job_commit_diffs[j->global_index] = commit_diff;
 		m->quickdiff_active = false;
 	} else {
 		m->quickdiff_active = true;
 		m->quickdiff_value = m->last_sent_diff;
+		m->quickdiff_commit_value = commit_diff;
 		datum_blake2b_share_target(m->quickdiff_target, floorPoT(m->quickdiff_value));
 	}
-	tdiff = floorPoT(m->last_sent_diff);
-	share_nbits = datum_blake2b_share_nbits(tdiff);
+	tdiff = floorPoT(commit_diff);
+	// nbits is only a hint to the hasher (it is not part of the hashed work), so it carries
+	// the target the miner is actually asked for.
+	share_nbits = datum_blake2b_share_nbits(floorPoT(m->last_sent_diff));
 	if (!share_nbits) return -1;
 	
 	// We'll use the client's send buffer for sanity, since in this environment it wont result in a partial send and we can just build up the string in the output buffer
