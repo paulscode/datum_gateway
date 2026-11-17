@@ -1666,7 +1666,7 @@ bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_dif
 // standard method; a Gateway without it answers "Method not found", which is itself the
 // answer: none of these features. A feature listed with false is supported but turned off.
 //
-//   {"gateway":"v0.5.1-beta/<commit>","algo":"sha256",
+//   {"gateway":"v0.5.1-beta","algo":"sha256",
 //    "features":{"vardiff_below_pool_min":true,"password_difficulty":true,"reject_tls_probe":true},
 //    "pooled":true,"pool_min_diff":65536}
 //
@@ -1681,9 +1681,9 @@ int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id) {
 		send_error_to_client(c, id, "[-1,\"Out of memory\",null]");
 		return 0;
 	}
-	char gateway[160];
-	snprintf(gateway, sizeof(gateway), "%s/%s", DATUM_PROTOCOL_VERSION, GIT_COMMIT_HASH);
-	json_object_set_new(result, "gateway", json_string(gateway));
+	// The release only, not the exact commit: the stratum port is usually public, and a precise
+	// build fingerprint would help someone target a known bug in it.
+	json_object_set_new(result, "gateway", json_string(DATUM_PROTOCOL_VERSION));
 	json_object_set_new(result, "algo", json_string("sha256"));
 	json_object_set_new(features, "vardiff_below_pool_min", json_boolean(datum_config.stratum_v1_vardiff_below_pool_min));
 	json_object_set_new(features, "password_difficulty", json_boolean(datum_config.stratum_v1_password_difficulty));
