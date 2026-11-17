@@ -1468,6 +1468,9 @@ static void pool_min_coinb1_hex(struct pool_min_fixture *f, unsigned char pot, c
 	hex[sizeof(coinb1) << 1] = 0;
 }
 
+void reset_vardiff_stats(T_DATUM_CLIENT_DATA *c);
+void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick);
+
 static void datum_stratum_vardiff_below_pool_min_tests(void) {
 	static struct pool_min_fixture f;
 	char coinb1_hex[128];
@@ -1582,6 +1585,40 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		datum_test(result && !strcmp(json_string_value(json_object_get(result, "algo")) ?: "", "blake2b"));
 		datum_test(result && json_is_integer(json_object_get(result, "pool_min_diff")));
 		json_decref(reply);
+		pool_min_close(&f);
+	}
+
+	// Vardiff measures the difficulty now served. Seen live: shares from a job at the old,
+	// easier difficulty, counted after a step up, made a quickdiff jump 16384 -> 262144.
+	if (pool_min_open(&f, true)) {
+		T_DATUM_MINER_DATA * const m = &f.miner;
+		(void)pool_min_take_output(&f);
+		// Sending a new difficulty starts the measurement over.
+		m->share_count_since_snap = 250;
+		m->share_count_old_diff_since_snap = 3;
+		m->current_diff = 16384;
+		datum_test(send_mining_set_difficulty(f.client) == 0);
+		datum_test(m->share_count_since_snap == 0 && m->share_count_old_diff_since_snap == 0);
+		// A share from an older, easier job is accepted but not counted toward the rate.
+		datum_stratum_count_vardiff_share(m, 8192);
+		datum_test(m->share_count_since_snap == 0 && m->share_count_old_diff_since_snap == 1);
+		datum_stratum_count_vardiff_share(m, 16384);
+		datum_test(m->share_count_since_snap == 1 && m->share_diff_since_snap == 16384);
+		// Nine quick old-job shares cannot trigger a quickdiff.
+		reset_vardiff_stats(f.client);
+		m->share_snap_tsms = m->sdata->loop_tsms - 2000;
+		for (int i = 0; i < 9; ++i) datum_stratum_count_vardiff_share(m, 8192);
+		stratum_update_vardiff(f.client, false);
+		datum_test(m->current_diff == 16384);
+		// Over a minute with only old-job shares is not silence: no step down.
+		m->share_snap_tsms = m->sdata->loop_tsms - 70000;
+		stratum_update_vardiff(f.client, true);
+		datum_test(m->current_diff == 16384);
+		// A minute of true silence still steps down, as before.
+		reset_vardiff_stats(f.client);
+		m->share_snap_tsms = m->sdata->loop_tsms - 70000;
+		stratum_update_vardiff(f.client, true);
+		datum_test(m->current_diff == 8192);
 		pool_min_close(&f);
 	}
 

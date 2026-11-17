@@ -272,6 +272,9 @@ typedef struct {
 	uint64_t share_count_since_snap;
 	uint64_t share_diff_since_snap;
 	uint64_t share_snap_tsms;
+	// Shares since the snapshot from a job with an easier difficulty than the one now served:
+	// still accepted, but not counted toward the rate (see datum_stratum_count_vardiff_share).
+	uint64_t share_count_old_diff_since_snap;
 	
 	bool quickdiff_active;
 	uint64_t quickdiff_value;
@@ -320,6 +323,7 @@ void datum_stratum_apply_password_opts(T_DATUM_MINER_DATA *m, const char *pw);
 bool datum_stratum_extranonce2_zero_extend(const T_DATUM_MINER_DATA *m, unsigned char *extranonce_bin);
 
 int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id);
+void datum_stratum_count_vardiff_share(T_DATUM_MINER_DATA *m, uint64_t job_diff);
 bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff);
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block);
 void update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, int job_state);

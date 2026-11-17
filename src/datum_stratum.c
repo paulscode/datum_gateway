@@ -801,7 +801,25 @@ void reset_vardiff_stats(T_DATUM_CLIENT_DATA *c) {
 	T_DATUM_MINER_DATA * const m = c->app_client_data;
 	m->share_count_since_snap = 0;
 	m->share_diff_since_snap = 0;
+	m->share_count_old_diff_since_snap = 0;
 	m->share_snap_tsms = m->sdata->loop_tsms;
+}
+
+// Count an accepted share toward vardiff's rate, or not.
+//
+// Vardiff measures the rate at the difficulty now served, and a quickdiff multiplies that
+// difficulty by how far the rate is off. A share from a job sent at an easier difficulty
+// (in flight when the difficulty went up, or from work the miner is still finishing) arrives
+// faster than the miner's rate at the current one, so counting it overstates the rate and
+// the quickdiff overshoots: seen live, 250 shares at 8192 counted after a step to 16384
+// produced a jump to 262144. Such a share is still accepted; it just isn't counted.
+void datum_stratum_count_vardiff_share(T_DATUM_MINER_DATA *m, uint64_t job_diff) {
+	if (job_diff < m->last_sent_diff) {
+		m->share_count_old_diff_since_snap++;
+		return;
+	}
+	m->share_count_since_snap++;
+	m->share_diff_since_snap += job_diff;
 }
 
 // The difficulty floor to apply to this client on a downward vardiff step.
@@ -841,6 +859,9 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 	
 	if (!m->share_count_since_snap) {
 		// no shares since last snap
+		// Shares from an easier, older job are still arriving: the miner is not silent, its
+		// shares at the current difficulty just have not started yet. Wait for them.
+		if (m->share_count_old_diff_since_snap) return;
 		// is it because our diff is way too high?
 		if (delta_tsms > 60000) {
 			// 60s with no shares seems sufficient to bump diff down next round.
@@ -1475,8 +1496,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	stratum_note_share(m, DATUM_SHARE_ACCEPTED, job_diff);
 	
 	// update since-snap totals
-	m->share_count_since_snap++;
-	m->share_diff_since_snap += job_diff;
+	datum_stratum_count_vardiff_share(m, job_diff);
 	
 	stratum_update_miner_stats_accepted(c, job_diff);
 	stratum_update_vardiff(c,false);
@@ -1966,6 +1986,8 @@ int send_mining_set_difficulty(T_DATUM_CLIENT_DATA *c) {
 	datum_socket_send_string_to_client(c, s);
 	
 	m->last_sent_diff = m->current_diff;
+	// The rate measured so far was at the old difficulty; start measuring the new one.
+	reset_vardiff_stats(c);
 	
 	return 0;
 }
