@@ -59,7 +59,9 @@ The pool sees no difference: each forwarded share carries the committed target, 
   job is already made unique by the marker at the end of coinb1, so nothing changes there.
 - **Password difficulty.** With `stratum.password_difficulty` on, a `d=N` below the pool's
   minimum is now served, where before the minimum overrode it. Rental tools can therefore ask
-  for each rig's own optimal difficulty and get it.
+  for each rig's own optimal difficulty and get it. A fixed `fd=N` below the minimum is still
+  raised to it, as before: with vardiff off, nothing else would keep a fixed low difficulty
+  from becoming a flood of shares.
 - **Not pooled.** Work that is not pooled (the pool is unreachable and the Gateway is mining
   solo) has no pool minimum, so the two difficulties are equal.
 

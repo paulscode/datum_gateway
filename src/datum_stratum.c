@@ -844,12 +844,8 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 	uint64_t ms_per_share;
 	uint64_t target_ms_share;
 
-	// the client asked to be held at one difficulty, so there is nothing to vary. Not below
-	// the pool's minimum when vardiff_below_pool_min serves it there: the pool minimum used to
-	// be the floor that stopped a fixed low difficulty from becoming a flood of shares, so
-	// vardiff stays in charge until the miner is at the minimum.
-	if (m->client_fixed_diff &&
-	    !(datum_config.stratum_v1_vardiff_below_pool_min && m->current_diff < datum_config.override_vardiff_min)) return;
+	// the client asked to be held at one difficulty, so there is nothing to vary
+	if (m->client_fixed_diff) return;
 
 	// if we already have a diff change pending, don't do calcs again
 	if (m->current_diff != m->last_sent_diff) return;
@@ -1895,7 +1891,10 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	// commitment further down must agree.
 	const uint64_t pool_min_diff = datum_config.override_vardiff_min;
 
-	if (j->is_datum_job && !datum_config.stratum_v1_vardiff_below_pool_min) {
+	// A fixed difficulty (fd=) keeps the pool minimum as its floor even with
+	// vardiff_below_pool_min: with vardiff off there is nothing else to stop a fixed low
+	// difficulty from becoming a flood of shares.
+	if (j->is_datum_job && (!datum_config.stratum_v1_vardiff_below_pool_min || m->client_fixed_diff)) {
 		// check if our client meets of exceeds the minimum datum diff
 		if (m->current_diff < pool_min_diff) {
 			m->current_diff = pool_min_diff;
@@ -1926,16 +1925,21 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	// regular notify carries the new difficulty. quickdiff_active stays set until then so a
 	// miner that only applies set_difficulty on new work cannot trigger repeated jumps.
 	if (quickdiff && j->is_datum_job && commit_diff > m->last_sent_diff) {
-		if (m->last_sent_stratum_job_index == j->global_index &&
-		    !m->last_sent_subsidy_only &&
-		    floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)) {
-			m->quickdiff_active = true;
-			return 0;
+		if (m->last_sent_stratum_job_index == j->global_index) {
+			if (!m->last_sent_subsidy_only &&
+			    floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)) {
+				m->quickdiff_active = true;
+				return 0;
+			}
+			// Same job, but different work from what the miner holds (its full coinbase after
+			// the subsidy-only version, or a new pool minimum): a quickdiff job, which leaves
+			// the stored entries for the miner's in-flight shares alone.
+		} else {
+			// A newer job the miner has not had yet: its commitment is pinned at the pool
+			// minimum too, so a quickdiff version of it would be the same work as its regular
+			// version, and sending both makes the miner redo it. Send it as a regular job.
+			quickdiff = false;
 		}
-		// A newer job the miner has not had yet: its commitment is pinned at the pool
-		// minimum too, so a quickdiff version of it would be the same work as its regular
-		// version, and sending both makes the miner redo it. Send it as a regular job.
-		quickdiff = false;
 	}
 
 	// if this is a quick diff change, the job is likely identical to one we've already sent

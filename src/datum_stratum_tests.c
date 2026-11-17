@@ -1682,21 +1682,13 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		pool_min_close(&f);
 	}
 
-	// A fixed difficulty (fd=) below the pool minimum does not stop vardiff when the option
-	// serves it there, so a miner cannot pin itself to a flood of easy shares.
+	// A fixed difficulty (fd=) keeps the pool minimum as its floor even with the option on:
+	// with vardiff off, nothing else would stop a fixed low difficulty becoming a flood.
 	if (pool_min_open(&f, true)) {
-		T_DATUM_MINER_DATA * const m = &f.miner;
-		// The defaults a loaded config would carry (the fixture loads none).
-		datum_config.stratum_v1_vardiff_target_shares_min = 8;
-		datum_config.stratum_v1_vardiff_quickdiff_count = 8;
-		datum_config.stratum_v1_vardiff_quickdiff_delta = 8;
-		m->client_fixed_diff = true;
-		m->current_diff = m->last_sent_diff = 1024;
-		reset_vardiff_stats(f.client);
-		m->share_snap_tsms = m->sdata->loop_tsms - 2000;
-		for (int i = 0; i < 20; ++i) datum_stratum_count_vardiff_share(m, 1024);
-		stratum_update_vardiff(f.client, false);
-		datum_test(m->current_diff > 1024);
+		(void)pool_min_take_output(&f);
+		f.miner.client_fixed_diff = true;
+		datum_test(send_mining_notify(f.client, false, false, false) == 0);
+		datum_test(f.miner.stratum_job_diffs[0] == (UINT64_C(1) << 20));
 		pool_min_close(&f);
 	}
 
