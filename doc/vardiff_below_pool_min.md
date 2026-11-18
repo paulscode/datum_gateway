@@ -20,9 +20,10 @@ changing what the pool receives:
 
 It is off by default. With it off, miners are raised to the pool's minimum as before. Two
 vardiff fixes from the same change apply either way: vardiff measures the rate at the
-difficulty it now serves (shares from older, easier jobs are accepted and credited at the
-difficulty they meet, but not counted toward the rate as if they were at the new one), and
-it starts measuring afresh whenever it sends a new difficulty.
+difficulty it now serves (a share from an older, easier job is accepted, credited at the
+served difficulty if it meets it and otherwise without credit, and not counted toward the
+rate as if it were at the new one), and it starts measuring afresh whenever it sends a new
+difficulty.
 
 ## What changes
 
@@ -44,7 +45,7 @@ that also meet the committed target are sent to the pool.**
 Whether a hash meets the committed target does not depend on which difficulty the miner was
 asked for. The shares forwarded are exactly the ones a miner working at the committed
 difficulty would have found, with the same expected credit and the same variance. Blocks are
-among them, since a block meets any share target. Nothing is withheld; the miner only reports
+among them, since a block meets any share target up to the network's. Nothing is withheld; the miner only reports
 the easier shares in between, which the Gateway keeps to itself.
 
 The pool sees no difference: each forwarded share carries the committed target, as before.
@@ -55,8 +56,14 @@ The pool sees no difference: each forwarded share carries the committed target, 
   byte differs from the job the miner already holds. When the commitment is held at the pool
   minimum and a quickdiff only raises the served difficulty, the Gateway sends just the new
   `mining.set_difficulty` and leaves the miner on its current job, rather than resending
-  identical work that the miner would redo and resubmit as duplicates. On SHA256 a quickdiff
-  job is already made unique by the marker at the end of coinb1, so nothing changes there.
+  identical work that the miner would redo and resubmit as duplicates. The same goes when a
+  newer job is still on its way to the miner: it arrives once, as a regular job at the new
+  difficulty. On SHA256 a quickdiff job is already made unique by the marker at the end of
+  coinb1, so nothing changes there.
+- **Shares kept local.** A share between the two targets is accepted but not sent to the pool,
+  except when the pool would take no share for its job: under anti-withholding, one with an
+  assignment already disclosed is answered as stale, and one without an assignment is refused,
+  as a forwarded share would be.
 - **Password difficulty.** With `stratum.password_difficulty` on, a `d=N` below the pool's
   minimum is now served, where before the minimum overrode it. Rental tools can therefore ask
   for each rig's own optimal difficulty and get it. A fixed `fd=N` below the minimum is still
@@ -84,10 +91,12 @@ method, and it needs no subscribe or authorize:
 A feature listed with `false` is supported but switched off. A Gateway without the method
 answers `Method not found`, which means none of these features. `pool_min_diff` is the pool's
 current minimum as DATUM's integer difficulty (on BLAKE2b, `mining.set_difficulty` sends 65535/65536
-of it), or `0` when not mining pooled. Send `"params":[]`: a request without it is dropped.
+of it), or `0` when not mining pooled. Send `"params":[]`: as with any request, one without
+`params` closes the connection.
 
 ## TLS probes
 
-A connection whose first line starts with a TLS handshake byte (`0x16`) is closed at once.
+A connection is closed at once when a read starts with a TLS handshake record (`0x16`) and no
+partial line is pending, as at the start of a connection.
 Some pool checkers, MiningRigRentals' among them, try encrypted stratum first; left waiting,
 they time out and report a working plain-stratum pool as failing.
