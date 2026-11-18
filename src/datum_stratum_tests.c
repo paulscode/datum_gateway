@@ -305,6 +305,52 @@ static void datum_blake2b_extranonce2_zero_extend_tests(void) {
 		datum_blake2b_share_passed_gate);
 	datum_test(miner.extranonce2_zero_extended_shares == 2);
 	datum_test(!miner.extranonce2_64bit);
+	
+	// A quickdiff (Q) share for a job other than its quickdiff notify's is hashed first, so a
+	// block in it would still be submitted, and only then refused as unknown work. The same
+	// share for the bound job passes the gate as usual.
+	{
+		static const char unknown_work[] =
+			"{\"error\":[20,\"unknown-work\",null],\"id\":7,\"result\":null}\n";
+		char submit[256];
+		snprintf(submit, sizeof(submit),
+			"{\"id\":7,\"method\":\"mining.submit\",\"params\":["
+			"\"miner\",\"Q0000000000c0de00\",\"%s\",\"0000000000000000\",\"%s\"]}",
+			"deadbeef00000000", nonce_32bit);
+		miner.quickdiff_value = 1;
+		miner.quickdiff_commit_value = 0;
+		miner.quickdiff_job_index = 5;
+		client.out_buf = 0;
+		datum_test(datum_stratum_v1_socket_thread_client_cmd(&client, submit) == 0);
+		datum_test(client.out_buf == (int)strlen(unknown_work));
+		datum_test(!memcmp(client.w_buffer, unknown_work, strlen(unknown_work)));
+		datum_test(miner.last_reject_reason == DATUM_SHARE_REJECT_UNKNOWN_JOB);
+		miner.quickdiff_job_index = 0;
+		client.out_buf = 0;
+		datum_test(datum_stratum_v1_socket_thread_client_cmd(&client, submit) == 0);
+		datum_test(client.out_buf == (int)strlen(datum_blake2b_share_passed_gate));
+		datum_test(!memcmp(client.w_buffer, datum_blake2b_share_passed_gate, strlen(datum_blake2b_share_passed_gate)));
+		
+		// An unbound Q share is rebuilt with the latest quickdiff commitment, which need not
+		// be the one the miner hashed. When it does not rebuild, it is still unknown work,
+		// not H-not-zero, and the zero-extended retry is neither tried nor counted.
+		snprintf(submit, sizeof(submit),
+			"{\"id\":7,\"method\":\"mining.submit\",\"params\":["
+			"\"miner\",\"Q0000000000c0de00\",\"%s\",\"0000000000000000\",\"%s\"]}",
+			"deadbeefcafef00d", nonce_32bit);
+		miner.quickdiff_job_index = 5;
+		miner.quickdiff_commit_value = 16;
+		client.out_buf = 0;
+		datum_test(datum_stratum_v1_socket_thread_client_cmd(&client, submit) == 0);
+		datum_test(client.out_buf == (int)strlen(unknown_work));
+		datum_test(!memcmp(client.w_buffer, unknown_work, strlen(unknown_work)));
+		datum_test(miner.last_reject_reason == DATUM_SHARE_REJECT_UNKNOWN_JOB);
+		datum_test(miner.extranonce2_zero_extended_shares == 2);
+		datum_test(!miner.extranonce2_64bit);
+		miner.quickdiff_value = 0;
+		miner.quickdiff_commit_value = 0;
+		miner.quickdiff_job_index = 0;
+	}
 
 	// A miner that means all 8 bytes passes on the first reading, so the fallback never
 	// runs for it. This is the case that must not regress: it is every device already

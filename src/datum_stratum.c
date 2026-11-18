@@ -1226,6 +1226,11 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		stratum_note_share(m, reject, job_diff);
 		return 0;
 	}
+	// A quickdiff share for a job other than its quickdiff notify's. It is still hashed, so a
+	// block in it is not lost, and refused after the block check. Its work is rebuilt with the
+	// latest quickdiff commitment, which need not be the one the miner hashed, so a failure to
+	// rebuild it is answered as unknown work, not as a fault in the miner's hashing.
+	const bool q_unbound = quickdiff && !datum_stratum_quickdiff_for_job(m, g_job_index);
 	
 	// construct block header
 	
@@ -1337,7 +1342,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	if (!datum_stratum_job_blake2b_commitment_from_txn(job, full_cb_txn,
 		full_cb_txn_size, target_pot, empty_work, blake2b_commitment)) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_INTERNAL, job_diff);
+		stratum_note_share(m, q_unbound ? DATUM_SHARE_REJECT_UNKNOWN_JOB : DATUM_SHARE_REJECT_INTERNAL, job_diff);
 		return 0;
 	}
 	// The extranonce2 is read exactly as submitted first. Only if that fails the gate
@@ -1349,17 +1354,23 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	for (;;) {
 		if (!datum_blake2b_work_root(root, blake2b_commitment, extranonce_bin)) {
 			send_unknown_work_error(c, id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_INTERNAL, job_diff);
+			stratum_note_share(m, q_unbound ? DATUM_SHARE_REJECT_UNKNOWN_JOB : DATUM_SHARE_REJECT_INTERNAL, job_diff);
 			return 0;
 		}
 		datum_blake2b_build_work_header(work, job->prevhash_bin, nonce8, ntime8, root);
 		memcpy(block_header, work, 80);
 		if (!datum_blake2b_pow_hash_le(share_hash, work, (const unsigned char[16]){0}, 0)) {
 			send_unknown_work_error(c, id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_INTERNAL, job_diff);
+			stratum_note_share(m, q_unbound ? DATUM_SHARE_REJECT_UNKNOWN_JOB : DATUM_SHARE_REJECT_INTERNAL, job_diff);
 			return 0;
 		}
 		if (upk_u32le(share_hash, 28) == 0) break;
+		if (q_unbound) {
+			// Not evidence about the miner's extranonce2 either way: no retry, nothing latched.
+			send_unknown_work_error(c, id);
+			stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, job_diff);
+			return 0;
+		}
 		if (zero_extended || !datum_stratum_extranonce2_zero_extend(m, extranonce_bin)) {
 			send_rejected_hnotzero_error(c, id);
 			stratum_note_share(m, DATUM_SHARE_REJECT_BAD_WORK_ROOT, job_diff);
@@ -1427,7 +1438,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	
 	// A quickdiff share is only for the job its quickdiff notify was sent for. Checked after the
 	// block check, like the rejections below, so a block found in one is still submitted.
-	if (quickdiff && !datum_stratum_quickdiff_for_job(m, g_job_index)) {
+	if (q_unbound) {
 		send_unknown_work_error(c, id);
 		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, job_diff);
 		return 0;
