@@ -1898,24 +1898,6 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 		commit_diff = pool_min_diff;
 	}
 	
-	// if this is a quick diff change, the job is likely identical to one we've already sent
-	// in which case, we don't want to clobber the normal target table and reject shares that we shouldn't
-	if (!quickdiff) {
-		get_target_from_diff(m->stratum_job_targets[j->global_index], m->last_sent_diff);
-		m->stratum_job_diffs[j->global_index] = m->last_sent_diff;
-		m->stratum_job_commit_diffs[j->global_index] = commit_diff;
-		m->quickdiff_active = false;
-	} else {
-		m->quickdiff_active = true;
-		m->quickdiff_value = m->last_sent_diff;
-		m->quickdiff_commit_value = commit_diff;
-		m->quickdiff_job_index = j->global_index;
-		get_target_from_diff(m->quickdiff_target, m->quickdiff_value);
-	}
-	
-	// We'll use the client's send buffer for sanity, since in this environment it wont result in a partial send and we can just build up the string in the output buffer
-	datum_socket_send_string_to_client(c, "{\"id\":null,\"method\":\"mining.notify\",\"params\":[");
-	
 	if (j->job_state >= JOB_STATE_FULL_PRIORITY_WAIT_COINBASER) {
 		if (((T_DATUM_STRATUM_THREADPOOL_DATA *)t->app_thread_data)->full_coinbase_ready) {
 			full_coinbase = true;
@@ -1934,6 +1916,41 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 			cbselect = 0;
 		}
 	}
+	
+	// Two quickdiffs on the same job share the coinb1 marker, so they are different work only
+	// through the committed target byte. When vardiff_below_pool_min holds the commitment at the
+	// pool minimum, a second quickdiff (possible after a regular notify for the same job, such as
+	// its full coinbase after the subsidy-only work) would resend the Q work the miner already
+	// had, which it would redo and resubmit as duplicates. Send just the new difficulty (done
+	// above) and leave the miner on its current work. The quickdiff entries are left as they
+	// are, so its in-flight Q shares still validate against the Q work it holds, and
+	// quickdiff_active stays set until the next regular notify.
+	if (quickdiff && m->quickdiff_value && m->quickdiff_job_index == j->global_index &&
+	    m->quickdiff_job_id == upk_u64le(j->job_id, 0) && m->quickdiff_cbselect == cbselect &&
+	    floorPoT(m->quickdiff_commit_value) == floorPoT(commit_diff)) {
+		m->quickdiff_active = true;
+		return 0;
+	}
+	
+	// if this is a quick diff change, the job is likely identical to one we've already sent
+	// in which case, we don't want to clobber the normal target table and reject shares that we shouldn't
+	if (!quickdiff) {
+		get_target_from_diff(m->stratum_job_targets[j->global_index], m->last_sent_diff);
+		m->stratum_job_diffs[j->global_index] = m->last_sent_diff;
+		m->stratum_job_commit_diffs[j->global_index] = commit_diff;
+		m->quickdiff_active = false;
+	} else {
+		m->quickdiff_active = true;
+		m->quickdiff_value = m->last_sent_diff;
+		m->quickdiff_commit_value = commit_diff;
+		m->quickdiff_job_index = j->global_index;
+		m->quickdiff_job_id = upk_u64le(j->job_id, 0);
+		m->quickdiff_cbselect = cbselect;
+		get_target_from_diff(m->quickdiff_target, m->quickdiff_value);
+	}
+	
+	// We'll use the client's send buffer for sanity, since in this environment it wont result in a partial send and we can just build up the string in the output buffer
+	datum_socket_send_string_to_client(c, "{\"id\":null,\"method\":\"mining.notify\",\"params\":[");
 	
 	cb = &j->coinbase[cbselect];
 	// new block work always is just a blank coinbase, for now
