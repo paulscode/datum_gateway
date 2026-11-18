@@ -1612,6 +1612,39 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		pool_min_close(&f);
 	}
 	
+	// The same holds whatever the difficulties: with the setting off, and with it on once the
+	// served difficulty is above the pool minimum, a quickdiff copy of a job still pending
+	// would be the same work as the regular job the pacing loop sends after it.
+	for (int below = 0; below <= 1; ++below) {
+		static T_DATUM_STRATUM_JOB newer;
+		T_DATUM_STRATUM_JOB * const saved_slot = global_cur_stratum_jobs[1];
+		if (!pool_min_open(&f, below)) continue;
+		(void)pool_min_take_output(&f);
+		const uint64_t held = f.miner.stratum_job_diffs[0];
+		newer = f.job;
+		newer.global_index = 1;
+		global_cur_stratum_jobs[1] = &newer;
+		f.sdata->cur_stratum_job = &newer;
+		f.miner.current_diff = UINT64_C(1) << 22;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "mining.set_difficulty") != NULL);
+		datum_test(strstr(out, "mining.notify") == NULL);
+		datum_test(f.miner.quickdiff_active);
+		datum_test(f.miner.last_sent_stratum_job_index == 0);
+		datum_test(f.miner.stratum_job_diffs[0] == held);
+		datum_test(send_mining_notify(f.client, false, false, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "mining.notify") != NULL);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"Q") == NULL);
+		datum_test(!f.miner.quickdiff_active);
+		datum_test(f.miner.last_sent_stratum_job_index == 1);
+		datum_test(f.miner.stratum_job_diffs[1] == (UINT64_C(1) << 22));
+		datum_test(f.miner.stratum_job_commit_diffs[1] == (UINT64_C(1) << 22));
+		global_cur_stratum_jobs[1] = saved_slot;
+		pool_min_close(&f);
+	}
+	
 	// When the pool minimum has changed since the miner's job was sent, the work that would go
 	// out now differs from what it holds, so a served-only quickdiff is still a Q job, committed
 	// to the new minimum. The entries for the miner's in-flight shares are left alone.
