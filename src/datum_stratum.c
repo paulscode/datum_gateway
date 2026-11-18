@@ -1064,6 +1064,19 @@ static void stratum_note_share(T_DATUM_MINER_DATA *m, T_DATUM_SHARE_OUTCOME outc
 	}
 }
 
+// Refuse a share before the block check. A Q share not bound to the current quickdiff is
+// answered as unknown work at the difficulty now served, whatever check it failed.
+static void stratum_reject_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, bool q_unbound, void (*send_error)(T_DATUM_CLIENT_DATA *, uint64_t), T_DATUM_SHARE_OUTCOME outcome, uint64_t diff) {
+	T_DATUM_MINER_DATA * const m = c->app_client_data;
+	if (q_unbound) {
+		send_unknown_work_error(c, id);
+		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, m->last_sent_diff);
+		return;
+	}
+	send_error(c, id);
+	stratum_note_share(m, outcome, diff);
+}
+
 int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj) {
 	// {"params": ["username", "job", "extranonce2", "time", "nonce", "version"], "id": 1, "method": "mining.submit"}
 	// 0 = username
@@ -1184,6 +1197,11 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		return 0;
 	}
 	
+	// A Q share not bound to the current quickdiff (for another job, or with no quickdiff sent).
+	// It is refused as unknown work after the block check below; until then any other rejection
+	// is answered and counted the same way, rather than at the quickdiff it doesn't belong to.
+	const bool q_unbound = quickdiff && (!m->quickdiff_value || g_job_index != m->quickdiff_job_index);
+	
 	const uint64_t job_diff = quickdiff ? m->quickdiff_value : m->stratum_job_diffs[g_job_index];
 	// The difficulty the job's work was committed to; above job_diff only under vardiff_below_pool_min.
 	const uint64_t commit_diff = quickdiff ? m->quickdiff_commit_value : m->stratum_job_commit_diffs[g_job_index];
@@ -1194,22 +1212,19 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		vroll = json_array_get(params_obj, 5);
 		if (!vroll) {
 			// version rolling requested, but missing from this work submission
-			send_bad_version_error(c,id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_VERSION_ROLL, job_diff);
+			stratum_reject_submit(c, id, q_unbound, send_bad_version_error, DATUM_SHARE_REJECT_VERSION_ROLL, job_diff);
 			return 0;
 		}
 		vroll_s = json_string_value(vroll);
 		if (!vroll_s) {
 			// couldn't get string
-			send_bad_version_error(c,id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_VERSION_ROLL, job_diff);
+			stratum_reject_submit(c, id, q_unbound, send_bad_version_error, DATUM_SHARE_REJECT_VERSION_ROLL, job_diff);
 			return 0;
 		}
 		vroll_uint = strtoul(vroll_s, NULL, 16);
 		if ((vroll_uint & m->extension_version_rolling_mask) != vroll_uint) {
 			// tried to roll bits we didn't approve
-			send_bad_version_error(c,id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_VERSION_ROLL, job_diff);
+			stratum_reject_submit(c, id, q_unbound, send_bad_version_error, DATUM_SHARE_REJECT_VERSION_ROLL, job_diff);
 			return 0;
 		}
 		bver |= vroll_uint;
@@ -1226,19 +1241,16 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	pk_u32le(extranonce_bin, 0, m->sid_inv);
 	extranonce2 = json_array_get(params_obj, 2);
 	if (!extranonce2) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 		return 0;
 	}
 	extranonce2_s = json_string_value(extranonce2);
 	if (!extranonce2_s) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 		return 0;
 	}
 	if (strlen(extranonce2_s) != 16) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_EXTRANONCE_SIZE, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_EXTRANONCE_SIZE, job_diff);
 		return 0;
 	}
 	for(i=0;i<8;i++) {
@@ -1249,8 +1261,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	coinbase_index = hex2bin_uchar(&job_id_s[0xE]);
 	if (coinbase_index >= MAX_COINBASE_TYPES) {
 		if (!(empty_work && coinbase_index == 255)) {
-			send_unknown_work_error(c, id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+			stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 			return 0;
 		}
 	}
@@ -1262,15 +1273,13 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	}
 	
 	if (!cb) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_INTERNAL, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_INTERNAL, job_diff);
 		return 0;
 	}
 	
 	// Never-generated coinbase slots have coinb1_len==0; quickdiff patches at len-2.
 	if (cb->coinb1_len < 2) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_UNKNOWN_JOB, job_diff);
 		return 0;
 	}
 	
@@ -1314,14 +1323,12 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	// 68 - 71 = ntime
 	ntime = json_array_get(params_obj, 3);
 	if (!ntime) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 		return 0;
 	}
 	ntime_s = json_string_value(ntime);
 	if (!ntime_s) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 		return 0;
 	}
 	ntime_val = strtoul(ntime_s, NULL, 16);
@@ -1334,14 +1341,12 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	// 76 - 79 = nonce
 	nonce = json_array_get(params_obj, 4);
 	if (!nonce) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 		return 0;
 	}
 	nonce_s = json_string_value(nonce);
 	if (!nonce_s) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_unknown_work_error, DATUM_SHARE_REJECT_MALFORMED, job_diff);
 		return 0;
 	}
 	nonce_val = strtoul(nonce_s, NULL, 16);
@@ -1353,8 +1358,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	if (upk_u32le(share_hash, 28) != 0) {
 		// H-not-zero
 		//LOG_PRINTF("HIGH HASH: %8.8lx", (unsigned long)upk_u32le(share_hash, 28));
-		send_rejected_hnotzero_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_H_NOT_ZERO, job_diff);
+		stratum_reject_submit(c, id, q_unbound, send_rejected_hnotzero_error, DATUM_SHARE_REJECT_H_NOT_ZERO, job_diff);
 		return 0;
 	}
 	
@@ -1408,7 +1412,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	
 	// A quickdiff share is only for the job its quickdiff notify was sent for. Checked after the
 	// block check, like the other rejections here, so a block is never lost to it.
-	if (quickdiff && (!m->quickdiff_value || g_job_index != m->quickdiff_job_index)) {
+	if (q_unbound) {
 		send_unknown_work_error(c,id);
 		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, m->last_sent_diff);
 		return 0;

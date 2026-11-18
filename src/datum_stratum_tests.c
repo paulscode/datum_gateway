@@ -975,10 +975,61 @@ static void datum_stratum_repeat_quickdiff_tests(void) {
 #undef RQ_NTIME
 #undef RQ_NONCE
 
+// A Q share not bound to the current quickdiff is answered as unknown work at the difficulty now
+// served, whichever check refuses it, rather than as H-not-zero or a malformed share at a
+// quickdiff difficulty it doesn't belong to. A bound share is refused for what it is.
+static void datum_stratum_unbound_quickdiff_tests(void) {
+	const global_config_t saved = datum_config;
+	datum_stratum_test_submit_config();
+	T_DATUM_STRATUM_JOB * const job = datum_stratum_test_pooled_job();
+	T_DATUM_TEMPLATE_DATA * const tmpl = calloc(1, sizeof(*tmpl));
+	assert(tmpl);
+	tmpl->curtime = 0xffffff00;
+	job->block_template = tmpl;
+	T_DATUM_STRATUM_JOB * const saved_job0 = global_cur_stratum_jobs[0];
+	global_cur_stratum_jobs[0] = job;
+	T_DATUM_CLIENT_DATA * const c = datum_stratum_test_submit_client(job);
+	T_DATUM_MINER_DATA * const m = c->app_client_data;
+	json_error_t err;
+	json_t *params;
+
+	// For another job, and failing H-not-zero (nonce 1 is far from a valid share).
+	m->quickdiff_value = m->quickdiff_commit_value = 4096;
+	m->quickdiff_job_index = 7;
+	datum_test(datum_stratum_test_submit(c, "Q0000000000c0de00", 0x6625406b, 1) == 0);
+	datum_test(strstr(datum_stratum_test_take(c), "H-not-zero") == NULL);
+	datum_test(m->last_reject_reason == DATUM_SHARE_REJECT_UNKNOWN_JOB);
+	datum_test(m->share_count_rejected == 1 && m->share_diff_rejected == 1024);
+
+	// With no quickdiff sent, and a malformed extranonce2.
+	m->quickdiff_value = m->quickdiff_commit_value = 0;
+	m->quickdiff_job_index = 0;
+	params = json_loads("[\"w\", \"Q0000000000c0de00\", \"00\", \"6625406b\", \"00000001\"]", 0, &err);
+	datum_test(params && client_mining_submit(c, 1, params) == 0);
+	json_decref(params);
+	(void)datum_stratum_test_take(c);
+	datum_test(m->last_reject_reason == DATUM_SHARE_REJECT_UNKNOWN_JOB);
+	datum_test(m->share_count_rejected == 2 && m->share_diff_rejected == 2048);
+
+	// Bound to the current quickdiff: refused as H-not-zero, at the quickdiff difficulty.
+	m->quickdiff_value = m->quickdiff_commit_value = 4096;
+	datum_test(datum_stratum_test_submit(c, "Q0000000000c0de00", 0x6625406b, 1) == 0);
+	datum_test(strstr(datum_stratum_test_take(c), "H-not-zero") != NULL);
+	datum_test(m->last_reject_reason == DATUM_SHARE_REJECT_H_NOT_ZERO);
+	datum_test(m->share_count_rejected == 3 && m->share_diff_rejected == 2048 + 4096);
+
+	datum_stratum_test_submit_client_free(c);
+	global_cur_stratum_jobs[0] = saved_job0;
+	free(tmpl);
+	free(job);
+	datum_config = saved;
+}
+
 void datum_stratum_tests(void) {
 	datum_stratum_vardiff_below_pool_min_tests();
 	datum_stratum_quickdiff_job_tests();
 	datum_stratum_repeat_quickdiff_tests();
+	datum_stratum_unbound_quickdiff_tests();
 	datum_stratum_reject_reason_tests();
 	datum_stratum_request_min_diff_tests();
 	datum_stratum_password_opts_tests();
