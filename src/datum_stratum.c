@@ -1295,10 +1295,9 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		} else {
 			pk_u16le(full_cb_txn, cb->coinb1_len - 2, 0xAEBB);
 		}
-		full_cb_txn[job->target_pot_index] = floorPoT(m->quickdiff_commit_value ? m->quickdiff_commit_value : m->quickdiff_value);
+		full_cb_txn[job->target_pot_index] = floorPoT(m->quickdiff_commit_value);
 	} else {
-		const uint64_t cd = m->stratum_job_commit_diffs[g_job_index];
-		full_cb_txn[job->target_pot_index] = floorPoT(cd ? cd : m->stratum_job_diffs[g_job_index]);
+		full_cb_txn[job->target_pot_index] = floorPoT(m->stratum_job_commit_diffs[g_job_index]);
 	}
 	
 	if ((job->merklebranch_count) && (!empty_work)) {
@@ -1753,7 +1752,9 @@ int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id) {
 	json_object_set_new(result, "features", features);
 	const bool pooled = datum_protocol_is_active();
 	json_object_set_new(result, "pooled", json_boolean(pooled));
-	json_object_set_new(result, "pool_min_diff", json_integer(pooled ? (json_int_t)datum_stratum_pool_min_diff() : 0));
+	uint64_t pool_min = pooled ? datum_stratum_pool_min_diff() : 0;
+	if (pool_min > INT64_MAX) pool_min = INT64_MAX;
+	json_object_set_new(result, "pool_min_diff", json_integer((json_int_t)pool_min));
 
 	char * const body = json_dumps(result, JSON_COMPACT);
 	json_decref(result);
