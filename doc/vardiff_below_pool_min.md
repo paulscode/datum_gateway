@@ -82,7 +82,7 @@ method, and it needs no subscribe or authorize:
 A feature listed with `false` is supported but switched off. A Gateway without the method
 answers `Method not found`, which means none of these features. `pool_min_diff` is the pool's
 current minimum, in `mining.set_difficulty` units, or `0` when not mining pooled. Send
-`"params":[]`: a request without it is dropped.
+`"params":[]`: as with any request, leaving it out makes the Gateway close the connection.
 
 ## TLS probes
 
