@@ -1999,11 +1999,12 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	// - The miner's current job, when vardiff_below_pool_min holds the commitment at the
 	//   pool minimum and the quickdiff only raises the SERVED difficulty. Unless the miner
 	//   holds different work from what would go out now: the subsidy-only version sent at a
-	//   new block, or a commitment from before the pool minimum changed.
+	//   new block once the full coinbase is ready (while it is not, the subsidy-only version
+	//   is what would go out again), or a commitment from before the pool minimum changed.
 	if (quickdiff &&
 	    (m->last_sent_stratum_job_index != j->global_index ||
 	     (j->is_datum_job && commit_diff > m->last_sent_diff &&
-	      !m->last_sent_subsidy_only &&
+	      m->last_sent_subsidy_only == (datum_stratum_coinbase_index(sdata, m, false) == DATUM_COINBASE_ID_EMPTY) &&
 	      floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)))) {
 		m->quickdiff_active = true;
 		return 0;

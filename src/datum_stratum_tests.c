@@ -1703,6 +1703,40 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		pool_min_close(&f);
 	}
 
+	// Between a new block's subsidy-only blast and the full one, a served-only quickdiff would
+	// send the same subsidy-only work again, so it sends only the difficulty. Pooled, a job
+	// whose coinbaser is not in yet gets the subsidy-only coinbase.
+	if (pool_min_open(&f, true)) {
+		const int saved_active = atomic_load(&datum_protocol_client_active);
+		unsigned char notice[36] = {DATUM_ABW_DRAFT_REVISION, DATUM_ABW_ASSIGNMENT_ACTIVE, 0, 0x5a};
+		notice[35] = 0xFE;
+		(void)pool_min_take_output(&f);
+		datum_protocol_abw_reset();
+		datum_test(datum_protocol_abw_assignment_notice(sizeof(notice), notice));
+		atomic_store(&datum_protocol_client_active, 3);
+		datum_test(datum_protocol_is_active());
+		f.job.subsidy_only_coinbase = f.job.coinbase[0];
+		f.job.subsidy_only_coinbase.coinb2_bin[0] ^= 0xaa;
+		f.job.is_new_block = true;
+		f.job.need_coinbaser = true;
+		f.job.tsms = f.sdata->loop_tsms;
+		f.sdata->full_coinbase_ready = false;
+		datum_test(send_mining_notify(f.client, true, false, true) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"N") != NULL);
+		datum_test(f.miner.last_sent_subsidy_only);
+		datum_test(datum_stratum_coinbase_index(f.sdata, &f.miner, false) == DATUM_COINBASE_ID_EMPTY);
+		f.miner.current_diff = 16384;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[16383.75]") != NULL);
+		datum_test(strstr(out, "mining.notify") == NULL);
+		datum_test(f.miner.quickdiff_active);
+		atomic_store(&datum_protocol_client_active, saved_active);
+		datum_protocol_abw_reset();
+		pool_min_close(&f);
+	}
+	
 	// Off: quickdiff behaves exactly as before (the commitment always moves with it).
 	if (pool_min_open(&f, false)) {
 		(void)pool_min_take_output(&f);
