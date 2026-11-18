@@ -1806,6 +1806,28 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 	datum_test(datum_stratum_share_forwardable(served, 1024, 1024));
 	datum_test(datum_stratum_share_forwardable(served, 1024, 0));
 	
+	// A kept share the pool would take no share for is answered as a forwarded one would be:
+	// stale-work for a disclosed assignment, unknown-work for none. Forwarded and local
+	// shares are left to the caller.
+	if (pool_min_open(&f, true)) {
+		(void)pool_min_take_output(&f);
+		datum_test(datum_stratum_refuse_kept_share(f.client, 9, DATUM_SHARE_ROUTE_STALE, 1024));
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"error\":[21,\"stale-work\",null]") != NULL);
+		datum_test(f.miner.last_reject_reason == DATUM_SHARE_REJECT_STALE_WORK);
+		datum_test(datum_stratum_refuse_kept_share(f.client, 9, DATUM_SHARE_ROUTE_REFUSE, 1024));
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"error\":[20,\"unknown-work\",null]") != NULL);
+		datum_test(f.miner.last_reject_reason == DATUM_SHARE_REJECT_POOL_SUBMIT);
+		datum_test(f.miner.share_count_rejected == 2);
+		datum_test(!datum_stratum_refuse_kept_share(f.client, 9, DATUM_SHARE_ROUTE_FORWARD, 1024));
+		datum_test(!datum_stratum_refuse_kept_share(f.client, 9, DATUM_SHARE_ROUTE_LOCAL, 1024));
+		out = pool_min_take_output(&f);
+		datum_test(out[0] == 0);
+		datum_test(f.miner.share_count_rejected == 2);
+		pool_min_close(&f);
+	}
+	
 	// Routing: a share meeting the commitment is forwarded and one below it is kept local,
 	// unless the pool would refuse any share for the job, as under anti-withholding without an
 	// assignment. Then it is refused here too, as it would have been when forwarded.

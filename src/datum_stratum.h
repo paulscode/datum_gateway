@@ -338,6 +338,7 @@ enum {
 	DATUM_SHARE_ROUTE_STALE,	// answer as stale: the job's ABW assignment is disclosed
 	DATUM_SHARE_ROUTE_REFUSE,	// refuse: the pool would take no share for this job
 };
+bool datum_stratum_refuse_kept_share(T_DATUM_CLIENT_DATA *c, uint64_t id, int route, uint64_t job_diff);
 int datum_stratum_share_route(const T_DATUM_STRATUM_JOB *job, const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff);
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block);
 void update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, int job_state);

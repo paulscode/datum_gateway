@@ -1135,6 +1135,26 @@ static void stratum_note_share(T_DATUM_MINER_DATA *m, T_DATUM_SHARE_OUTCOME outc
 	}
 }
 
+// Answer a share that datum_stratum_share_route did not let through, as the pool would have
+// answered it when forwarded: stale when its job's anti-withholding assignment is disclosed,
+// unknown work when the pool would take no share for the job at all. Returns whether it
+// answered; a share to forward or keep local is left to the caller.
+bool datum_stratum_refuse_kept_share(T_DATUM_CLIENT_DATA *c, uint64_t id, int route, uint64_t job_diff) {
+	T_DATUM_MINER_DATA * const m = c->app_client_data;
+	switch (route) {
+		case DATUM_SHARE_ROUTE_STALE:
+			send_rejected_stale(c, id);
+			stratum_note_share(m, DATUM_SHARE_REJECT_STALE_WORK, job_diff);
+			return true;
+		case DATUM_SHARE_ROUTE_REFUSE:
+			send_unknown_work_error(c, id);
+			stratum_note_share(m, DATUM_SHARE_REJECT_POOL_SUBMIT, job_diff);
+			return true;
+		default:
+			return false;
+	}
+}
+
 // Some firmware runs a 32-bit extranonce2 inside the 8-byte field this dialect
 // negotiates. It hashes its work root over the value zero-padded to 8 bytes, but
 // hex-encodes 8 bytes out of a 4-byte variable, so the high 4 bytes on the wire are
@@ -1497,14 +1517,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	// datum_stratum_share_route). One kept local is still answered as the pool would answer
 	// it when the pool would take no share for its job at all.
 	const int route = datum_stratum_share_route(job, share_hash, job_diff, commit_diff);
-	if (!was_block && route == DATUM_SHARE_ROUTE_STALE) {
-		send_rejected_stale(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_STALE_WORK, job_diff);
-		return 0;
-	}
-	if (!was_block && route == DATUM_SHARE_ROUTE_REFUSE) {
-		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_POOL_SUBMIT, job_diff);
+	if (!was_block && datum_stratum_refuse_kept_share(c, id, route, job_diff)) {
 		return 0;
 	}
 
