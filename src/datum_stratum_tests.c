@@ -347,9 +347,30 @@ static void datum_blake2b_extranonce2_zero_extend_tests(void) {
 		datum_test(miner.last_reject_reason == DATUM_SHARE_REJECT_UNKNOWN_JOB);
 		datum_test(miner.extranonce2_zero_extended_shares == 2);
 		datum_test(!miner.extranonce2_64bit);
+		
+		// A Q share with no quickdiff sent at all, refused by an early check (here a short
+		// extranonce2), keeps its answer but is recorded with the unknown-job reason at the
+		// difficulty now served, not at the 0 of the quickdiff it doesn't belong to.
 		miner.quickdiff_value = 0;
 		miner.quickdiff_commit_value = 0;
 		miner.quickdiff_job_index = 0;
+		miner.last_sent_diff = 64;
+		{
+			const uint64_t rejected_diff = miner.share_diff_rejected;
+			const uint64_t rejected = miner.share_count_rejected;
+			snprintf(submit, sizeof(submit),
+				"{\"id\":7,\"method\":\"mining.submit\",\"params\":["
+				"\"miner\",\"Q0000000000c0de00\",\"dead\",\"0000000000000000\",\"%s\"]}",
+				nonce_32bit);
+			client.out_buf = 0;
+			datum_test(datum_stratum_v1_socket_thread_client_cmd(&client, submit) == 0);
+			datum_test(client.out_buf == (int)strlen(unknown_work));
+			datum_test(!memcmp(client.w_buffer, unknown_work, strlen(unknown_work)));
+			datum_test(miner.share_count_rejected == rejected + 1);
+			datum_test(miner.share_diff_rejected == rejected_diff + 64);
+			datum_test(miner.last_reject_reason == DATUM_SHARE_REJECT_UNKNOWN_JOB);
+		}
+		miner.last_sent_diff = 0;
 	}
 
 	// A miner that means all 8 bytes passes on the first reading, so the fallback never

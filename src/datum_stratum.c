@@ -1135,6 +1135,13 @@ static void stratum_note_share(T_DATUM_MINER_DATA *m, T_DATUM_SHARE_OUTCOME outc
 	}
 }
 
+// Record a share refused in client_mining_submit. A quickdiff share not bound to the current
+// quickdiff is recorded with the unknown-job reason, whichever check refused it, since it is
+// refused as unknown work in the end.
+static void stratum_note_reject(T_DATUM_MINER_DATA *m, bool q_unbound, T_DATUM_SHARE_OUTCOME outcome, uint64_t diff) {
+	stratum_note_share(m, q_unbound ? DATUM_SHARE_REJECT_UNKNOWN_JOB : outcome, diff);
+}
+
 // Answer a share that datum_stratum_share_route did not let through, as the pool would have
 // answered it when forwarded: stale when its job's anti-withholding assignment is disclosed,
 // unknown work when the pool would take no share for the job at all. Returns whether it
@@ -1251,6 +1258,9 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	// latest quickdiff commitment, which need not be the one the miner hashed, so a failure to
 	// rebuild it is answered as unknown work, not as a fault in the miner's hashing.
 	const bool q_unbound = quickdiff && !datum_stratum_quickdiff_for_job(m, g_job_index);
+	// Recorded at the difficulty now served, not at a quickdiff it doesn't belong to (which is
+	// 0 when none was sent), and with the unknown-job reason whatever check it fails.
+	const uint64_t reject_diff = q_unbound ? m->last_sent_diff : job_diff;
 	
 	// construct block header
 	
@@ -1261,7 +1271,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	extranonce2_s = json_string_value(extranonce2);
 	if (!extranonce2_s) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_MALFORMED, reject_diff);
 		return 0;
 	}
 	// Whatever split this connection was given at subscribe, and only that one: a miner
@@ -1269,7 +1279,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	const unsigned int en2_size = m->extranonce2_size ? m->extranonce2_size : 8;
 	if (strlen(extranonce2_s) != (size_t)(en2_size << 1)) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_EXTRANONCE_SIZE, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_EXTRANONCE_SIZE, reject_diff);
 		return 0;
 	}
 	// Session id, then the gateway's own zero padding when the split moved, then the
@@ -1288,7 +1298,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	
 	if (!cb) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_INTERNAL, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_INTERNAL, reject_diff);
 		return 0;
 	}
 	
@@ -1297,7 +1307,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		send_unknown_work_error(c, id);
 		// Through stratum_note_share like every other refusal, so the dashboard totals
 		// and the reject reasons count it too.
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_MALFORMED, reject_diff);
 		return 0;
 	}
 	
@@ -1327,7 +1337,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	ntime_len = json_string_length(ntime);
 	if (ntime_len != 8 && ntime_len != 16) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_MALFORMED, reject_diff);
 		return 0;
 	}
 	ntime_s = json_string_value(ntime);
@@ -1344,7 +1354,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	nonce_len = json_string_length(nonce);
 	if (nonce_len != 8 && nonce_len != 16) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_MALFORMED, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_MALFORMED, reject_diff);
 		return 0;
 	}
 	nonce_s = json_string_value(nonce);
@@ -1362,7 +1372,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	if (!datum_stratum_job_blake2b_commitment_from_txn(job, full_cb_txn,
 		full_cb_txn_size, target_pot, empty_work, blake2b_commitment)) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, q_unbound ? DATUM_SHARE_REJECT_UNKNOWN_JOB : DATUM_SHARE_REJECT_INTERNAL, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_INTERNAL, reject_diff);
 		return 0;
 	}
 	// The extranonce2 is read exactly as submitted first. Only if that fails the gate
@@ -1374,26 +1384,26 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	for (;;) {
 		if (!datum_blake2b_work_root(root, blake2b_commitment, extranonce_bin)) {
 			send_unknown_work_error(c, id);
-			stratum_note_share(m, q_unbound ? DATUM_SHARE_REJECT_UNKNOWN_JOB : DATUM_SHARE_REJECT_INTERNAL, job_diff);
+			stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_INTERNAL, reject_diff);
 			return 0;
 		}
 		datum_blake2b_build_work_header(work, job->prevhash_bin, nonce8, ntime8, root);
 		memcpy(block_header, work, 80);
 		if (!datum_blake2b_pow_hash_le(share_hash, work, (const unsigned char[16]){0}, 0)) {
 			send_unknown_work_error(c, id);
-			stratum_note_share(m, q_unbound ? DATUM_SHARE_REJECT_UNKNOWN_JOB : DATUM_SHARE_REJECT_INTERNAL, job_diff);
+			stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_INTERNAL, reject_diff);
 			return 0;
 		}
 		if (upk_u32le(share_hash, 28) == 0) break;
 		if (q_unbound) {
 			// Not evidence about the miner's extranonce2 either way: no retry, nothing latched.
 			send_unknown_work_error(c, id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, job_diff);
+			stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_UNKNOWN_JOB, reject_diff);
 			return 0;
 		}
 		if (zero_extended || !datum_stratum_extranonce2_zero_extend(m, extranonce_bin)) {
 			send_rejected_hnotzero_error(c, id);
-			stratum_note_share(m, DATUM_SHARE_REJECT_BAD_WORK_ROOT, job_diff);
+			stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_BAD_WORK_ROOT, reject_diff);
 			return 0;
 		}
 		zero_extended = true;
@@ -1460,7 +1470,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	// block check, like the rejections below, so a block found in one is still submitted.
 	if (q_unbound) {
 		send_unknown_work_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_UNKNOWN_JOB, reject_diff);
 		return 0;
 	}
 	
@@ -1469,7 +1479,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	if (job->is_stale_prevblock) {
 		// share is from a stale job
 		send_rejected_stale_block(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_STALE_PREVBLOCK, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_STALE_PREVBLOCK, reject_diff);
 		return 0;
 	}
 	
@@ -1481,12 +1491,12 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	check_time = datum_blake2b_share_ntime(job->blake2b_time_on_wire, ntime8, job->blake2b_flags);
 	if (check_time < job->block_template->mintime) {
 		send_rejected_time_too_old(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_TIME_TOO_OLD, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_TIME_TOO_OLD, reject_diff);
 		return 0;
 	}
 	if (check_time > (job->block_template->curtime + 7200)) {
 		send_rejected_time_too_new(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_TIME_TOO_NEW, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_TIME_TOO_NEW, reject_diff);
 		return 0;
 	}
 	
@@ -1494,7 +1504,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	if (compare_hashes(share_hash, work_target) > 0) {
 		// bad target diff
 		send_rejected_high_hash_error(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_ABOVE_TARGET, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_ABOVE_TARGET, reject_diff);
 		return 0;
 	}
 	
@@ -1502,14 +1512,14 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	if (m->sdata->loop_tsms > (job->tsms + ((datum_config.stratum_v1_share_stale_seconds + datum_config.bitcoind_work_update_seconds) * 1000))) {
 		// share is from a stale job
 		send_rejected_stale(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_STALE_WORK, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_STALE_WORK, reject_diff);
 		return 0;
 	}
 	
 	// check if duplicate submission
 	if (datum_stratum_check_for_dupe(m->sdata, share_hash, job->tsms)) {
 		send_rejected_duplicate(c, id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_DUPLICATE, job_diff);
+		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_DUPLICATE, reject_diff);
 		return 0;
 	}
 	
