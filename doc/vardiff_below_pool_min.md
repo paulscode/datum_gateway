@@ -45,8 +45,9 @@ that also meet the committed target are sent to the pool.**
 Whether a hash meets the committed target does not depend on which difficulty the miner was
 asked for. The shares forwarded are exactly the ones a miner working at the committed
 difficulty would have found, with the same expected credit and the same variance. Blocks are
-among them, since every block also meets the committed target. Nothing is withheld; the
-miner only reports the easier shares in between, which the Gateway keeps to itself.
+among them while the committed difficulty is at or below the network's, as it is on mainnet,
+where every block also meets the committed target. Nothing is withheld; the miner only reports
+the easier shares in between, which the Gateway keeps to itself.
 
 The pool sees no difference: each forwarded share carries the committed target, as before.
 

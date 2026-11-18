@@ -1036,7 +1036,7 @@ bool stratum_get_job(const T_DATUM_MINER_DATA * const m, const json_t * const jo
 	
 	// A quickdiff share for a job other than the one its quickdiff notify was sent for is
 	// refused too, but only in client_mining_submit after the block check (see
-	// datum_stratum_quickdiff_for_job), so a block in it is not lost.
+	// datum_stratum_quickdiff_for_job), so a block the Gateway can recognise in it is not lost.
 	if (!*out_quickdiff) {
 		*out_job_diff = m->stratum_job_diffs[*out_job_index];
 		*out_job_target = m->stratum_job_targets[*out_job_index];
@@ -1254,7 +1254,8 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		return 0;
 	}
 	// A quickdiff share for a job other than its quickdiff notify's. It is still hashed, so a
-	// block in it is not lost, and refused after the block check. Its work is rebuilt with the
+	// block the Gateway can recognise in it is submitted, and refused after the block check
+	// (under anti-withholding the Gateway cannot recognise one). Its work is rebuilt with the
 	// latest quickdiff commitment, which need not be the one the miner hashed, so a failure to
 	// rebuild it is answered as unknown work, not as a fault in the miner's hashing.
 	const bool q_unbound = quickdiff && !datum_stratum_quickdiff_for_job(m, g_job_index);
@@ -1467,7 +1468,9 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	}
 	
 	// A quickdiff share is only for the job its quickdiff notify was sent for. Checked after the
-	// block check, like the rejections below, so a block found in one is still submitted.
+	// block check, like the rejections below, so a block the Gateway can recognise in one is
+	// still submitted. Under anti-withholding it cannot recognise a block itself, so a block
+	// in such a share is not submitted.
 	if (q_unbound) {
 		send_unknown_work_error(c, id);
 		stratum_note_reject(m, q_unbound, DATUM_SHARE_REJECT_UNKNOWN_JOB, reject_diff);
