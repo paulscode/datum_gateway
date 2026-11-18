@@ -1666,6 +1666,34 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		pool_min_close(&f);
 	}
 	
+	// Solo work too: a quickdiff for a job still pending sends only the difficulty, and the job
+	// arrives once, as a regular job at the new difficulty.
+	if (pool_min_open(&f, true)) {
+		static T_DATUM_STRATUM_JOB newer;
+		T_DATUM_STRATUM_JOB * const saved_slot = global_cur_stratum_jobs[1];
+		(void)pool_min_take_output(&f);
+		f.job.is_datum_job = false;
+		newer = f.job;
+		newer.global_index = 1;
+		global_cur_stratum_jobs[1] = &newer;
+		f.sdata->cur_stratum_job = &newer;
+		f.miner.current_diff = 16384;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "mining.set_difficulty") != NULL);
+		datum_test(strstr(out, "mining.notify") == NULL);
+		datum_test(f.miner.quickdiff_active);
+		datum_test(send_mining_notify(f.client, false, false, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "mining.notify") != NULL);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"Q") == NULL);
+		datum_test(f.miner.last_sent_stratum_job_index == 1);
+		datum_test(f.miner.stratum_job_diffs[1] == 16384);
+		datum_test(f.miner.stratum_job_commit_diffs[1] == 16384);
+		global_cur_stratum_jobs[1] = saved_slot;
+		pool_min_close(&f);
+	}
+	
 	// When the pool minimum has changed since the miner's job was sent, the work that would go
 	// out now differs from what it holds, so a served-only quickdiff is still a Q job, committed
 	// to the new minimum. The entries for the miner's in-flight shares are left alone.
@@ -1931,6 +1959,9 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		datum_test(datum_stratum_share_route(&rj, served, 1024, 1024) == DATUM_SHARE_ROUTE_FORWARD);
 		rt.abw_enabled = true;
 		datum_test(datum_stratum_share_route(&rj, served, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_REFUSE);
+		// A share meeting the commitment, as every block does, is never answered as a kept
+		// share, even for a job the pool would take no share for: it goes to
+		// datum_protocol_pow_submit, which answers it.
 		datum_test(datum_stratum_share_route(&rj, committed, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_FORWARD);
 		rj.is_datum_job = false;
 		datum_test(datum_stratum_share_route(&rj, served, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_LOCAL);

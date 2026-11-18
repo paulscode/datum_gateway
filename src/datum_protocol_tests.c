@@ -1337,6 +1337,13 @@ static void datum_protocol_abw_cache_tests(void) {
 		check_template.abw_assignment_id = 4;
 		datum_test(datum_protocol_pow_job_check(&check_job) == DATUM_POW_JOB_DISCLOSED);
 		datum_test(datum_stratum_share_route(&check_job, kept, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_STALE);
+		{
+			// A share meeting the commitment, as every block does, is forwarded even under a
+			// disclosed assignment, rather than answered here as a kept share.
+			uint8_t meets[32];
+			datum_test(datum_blake2b_share_target(meets, 20));
+			datum_test(datum_stratum_share_route(&check_job, meets, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_FORWARD);
+		}
 		check_template.abw_assignment_id = 9;
 		datum_test(!datum_protocol_abw_assignment_revealed(9));
 		datum_test(datum_protocol_pow_job_check(&check_job) == 0);
