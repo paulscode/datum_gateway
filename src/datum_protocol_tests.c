@@ -1317,6 +1317,31 @@ static void datum_protocol_abw_cache_tests(void) {
 	atomic_store(&new_notify_threadsafe, 0);
 	new_notify_blockhash[0] = '\0';
 	datum_test(datum_protocol_abw_assignment_revealed(4));
+	{
+		// The job-level check that also covers shares the Gateway keeps to itself, and how a
+		// kept share under a disclosed assignment is answered: as stale, like a forwarded one.
+		static T_DATUM_TEMPLATE_DATA check_template;
+		static T_DATUM_STRATUM_JOB check_job;
+		uint8_t kept[32];
+		memset(&check_template, 0, sizeof(check_template));
+		memset(&check_job, 0, sizeof(check_job));
+		datum_test(datum_blake2b_share_target(kept, 10));
+		datum_test(datum_protocol_pow_job_check(NULL) == DATUM_POW_JOB_UNUSABLE);
+		datum_test(datum_protocol_pow_job_check(&check_job) == DATUM_POW_JOB_UNUSABLE);
+		check_job.block_template = &check_template;
+		check_job.is_datum_job = true;
+		datum_test(datum_protocol_pow_job_check(&check_job) == 0);
+		check_template.abw_enabled = true;
+		datum_test(datum_protocol_pow_job_check(&check_job) == DATUM_POW_JOB_UNUSABLE);
+		datum_test(datum_stratum_share_route(&check_job, kept, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_REFUSE);
+		check_template.abw_assignment_id = 4;
+		datum_test(datum_protocol_pow_job_check(&check_job) == DATUM_POW_JOB_DISCLOSED);
+		datum_test(datum_stratum_share_route(&check_job, kept, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_STALE);
+		check_template.abw_assignment_id = 9;
+		datum_test(!datum_protocol_abw_assignment_revealed(9));
+		datum_test(datum_protocol_pow_job_check(&check_job) == 0);
+		datum_test(datum_stratum_share_route(&check_job, kept, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_LOCAL);
+	}
 	datum_test(!datum_protocol_abw_cache_candidate(&pow, coinbase, sizeof(coinbase), raw_hash));
 	reveal[18] = 0;
 	datum_test(!datum_protocol_abw_reveal(sizeof(reveal), reveal));

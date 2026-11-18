@@ -2763,6 +2763,19 @@ void datum_protocol_pow_queue_submits(void) {
 	datum_queue_process(&pow_queue);
 }
 
+// Whether the pool would still take a share for this job at all, whatever the share: 0 if
+// so, DATUM_POW_JOB_UNUSABLE without a template, or without an assignment under
+// anti-withholding, and DATUM_POW_JOB_DISCLOSED once the job's assignment has been disclosed
+// (the pool cannot credit work under it any more, so a share for it is stale).
+int datum_protocol_pow_job_check(const T_DATUM_STRATUM_JOB *job) {
+	if (!job || !job->block_template) return DATUM_POW_JOB_UNUSABLE;
+	if (!job->block_template->abw_enabled) return 0;
+	const uint8_t id = job->block_template->abw_assignment_id;
+	if (!id) return DATUM_POW_JOB_UNUSABLE;
+	if (datum_protocol_abw_assignment_revealed(id)) return DATUM_POW_JOB_DISCLOSED;
+	return 0;
+}
+
 int datum_protocol_pow_submit(
 	const T_DATUM_CLIENT_DATA *c,
 	const T_DATUM_STRATUM_JOB *job,
@@ -2782,11 +2795,10 @@ int datum_protocol_pow_submit(
 	// called by other threads to submit new POW
 	T_DATUM_PROTOCOL_POW pow;
 
-	if (!job || !job->block_template || !block_header || !full_cb_tx ||
+	const int job_check = datum_protocol_pow_job_check(job);
+	if (job_check == DATUM_POW_JOB_UNUSABLE || !block_header || !full_cb_tx ||
 	    !raw_pow_hash || job->target_pot_index < 0 ||
-	    (size_t)job->target_pot_index >= full_cb_tx_size ||
-	    (job->block_template->abw_enabled &&
-	     !job->block_template->abw_assignment_id)) return -1;
+	    (size_t)job->target_pot_index >= full_cb_tx_size) return -1;
 	memset(&pow, 0, sizeof(pow));
 	pow.datum_job_id = job->datum_job_idx;
 	memcpy(pow.extranonce, extranonce, 12);
@@ -2808,8 +2820,7 @@ int datum_protocol_pow_submit(
 	pow.nonce = upk_u64le(block_header, 32);
 	pow.time_on_wire = job->blake2b_time_on_wire;
 	pow.version = job->version_uint;
-	if (pow.abw_assignment_id &&
-	    datum_protocol_abw_assignment_revealed(pow.abw_assignment_id)) {
+	if (job_check == DATUM_POW_JOB_DISCLOSED) {
 		// With the key disclosed the pool cannot credit work under this assignment:
 		// the share is stale, like one for replaced work. Nothing is wrong with the
 		// pool link, so it is not an error.

@@ -1469,16 +1469,23 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		return 0;
 	}
 	
-	// Only a share that meets the job's committed target goes to the pool. Under
-	// vardiff_below_pool_min the miner is served an easier target, and a share between the
-	// two is accepted here (so the miner's delivered hashrate is measured accurately) but
-	// never forwarded. Every share that does meet the committed target is forwarded, which
-	// includes every block candidate the pool could classify, so the pool receives exactly
-	// the shares it would have from a miner working at the committed difficulty.
-	const bool forward = datum_stratum_share_forwardable(share_hash, job_diff, commit_diff);
+	// Only a share that meets the job's committed target goes to the pool (see
+	// datum_stratum_share_route). One kept local is still answered as the pool would answer
+	// it when the pool would take no share for its job at all.
+	const int route = datum_stratum_share_route(job, share_hash, job_diff, commit_diff);
+	if (!was_block && route == DATUM_SHARE_ROUTE_STALE) {
+		send_rejected_stale(c, id);
+		stratum_note_share(m, DATUM_SHARE_REJECT_STALE_WORK, job_diff);
+		return 0;
+	}
+	if (!was_block && route == DATUM_SHARE_ROUTE_REFUSE) {
+		send_unknown_work_error(c, id);
+		stratum_note_share(m, DATUM_SHARE_REJECT_POOL_SUBMIT, job_diff);
+		return 0;
+	}
 
 	// work accepted
-	if (job->is_datum_job && !was_block && forward) {
+	if (!was_block && route == DATUM_SHARE_ROUTE_FORWARD) {
 		const int submitted = datum_protocol_pow_submit(c, job,
 			username_s, false, empty_work, quickdiff, block_header, job_diff, full_cb_txn,
 			full_cb_txn_size, share_hash, cb, extranonce_bin,
@@ -1812,6 +1819,21 @@ bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_dif
 	uint8_t commit_target[32];
 	if (!datum_blake2b_share_target(commit_target, floorPoT(commit_diff))) return false;
 	return compare_hashes(share_hash, commit_target) <= 0;
+}
+
+// What to do with a pooled share that met the miner's target. A share that meets the committed
+// target is forwarded, which includes every possible block. Under vardiff_below_pool_min a share
+// between the two targets is accepted but kept local, unless its job is one the pool would no
+// longer take a share for at all: then it is answered as a forwarded one would be, stale when
+// the job's anti-withholding assignment has been disclosed and refused otherwise.
+int datum_stratum_share_route(const T_DATUM_STRATUM_JOB *job, const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff) {
+	if (!job->is_datum_job) return DATUM_SHARE_ROUTE_LOCAL;
+	if (datum_stratum_share_forwardable(share_hash, job_diff, commit_diff)) return DATUM_SHARE_ROUTE_FORWARD;
+	switch (datum_protocol_pow_job_check(job)) {
+		case 0: return DATUM_SHARE_ROUTE_LOCAL;
+		case DATUM_POW_JOB_DISCLOSED: return DATUM_SHARE_ROUTE_STALE;
+		default: return DATUM_SHARE_ROUTE_REFUSE;
+	}
 }
 
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block) {

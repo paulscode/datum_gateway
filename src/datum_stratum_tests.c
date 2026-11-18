@@ -1753,6 +1753,26 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 	// With no split (commit == served), every accepted share is forwarded, as before.
 	datum_test(datum_stratum_share_forwardable(served, 1024, 1024));
 	datum_test(datum_stratum_share_forwardable(served, 1024, 0));
+	
+	// Routing: a share meeting the commitment is forwarded and one below it is kept local,
+	// unless the pool would refuse any share for the job, as under anti-withholding without an
+	// assignment. Then it is refused here too, as it would have been when forwarded.
+	{
+		static T_DATUM_TEMPLATE_DATA rt;
+		static T_DATUM_STRATUM_JOB rj;
+		memset(&rt, 0, sizeof(rt));
+		memset(&rj, 0, sizeof(rj));
+		rj.block_template = &rt;
+		rj.is_datum_job = true;
+		datum_test(datum_stratum_share_route(&rj, committed, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_FORWARD);
+		datum_test(datum_stratum_share_route(&rj, served, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_LOCAL);
+		datum_test(datum_stratum_share_route(&rj, served, 1024, 1024) == DATUM_SHARE_ROUTE_FORWARD);
+		rt.abw_enabled = true;
+		datum_test(datum_stratum_share_route(&rj, served, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_REFUSE);
+		datum_test(datum_stratum_share_route(&rj, committed, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_FORWARD);
+		rj.is_datum_job = false;
+		datum_test(datum_stratum_share_route(&rj, served, 1024, UINT64_C(1) << 20) == DATUM_SHARE_ROUTE_LOCAL);
+	}
 }
 
 void datum_stratum_tests(void) {
