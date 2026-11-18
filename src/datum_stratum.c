@@ -1184,14 +1184,6 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		return 0;
 	}
 	
-	// A quickdiff share must be for the job its quickdiff notify was sent for. The Q label
-	// alone used to select the quickdiff difficulty for any current job.
-	if (quickdiff && (!m->quickdiff_value || g_job_index != m->quickdiff_job_index)) {
-		send_unknown_work_error(c,id);
-		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, m->last_sent_diff);
-		return 0;
-	}
-	
 	const uint64_t job_diff = quickdiff ? m->quickdiff_value : m->stratum_job_diffs[g_job_index];
 	// The difficulty the job's work was committed to; above job_diff only under vardiff_below_pool_min.
 	const uint64_t commit_diff = quickdiff ? m->quickdiff_commit_value : m->stratum_job_commit_diffs[g_job_index];
@@ -1413,6 +1405,14 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 			// submit via DATUM
 			datum_protocol_pow_submit(c, job, username_s, was_block, empty_work, quickdiff, block_header, job_diff, full_cb_txn, cb, extranonce_bin, coinbase_index);
 		}
+	}
+	
+	// A quickdiff share is only for the job its quickdiff notify was sent for. Checked after the
+	// block check, like the other rejections here, so a block is never lost to it.
+	if (quickdiff && (!m->quickdiff_value || g_job_index != m->quickdiff_job_index)) {
+		send_unknown_work_error(c,id);
+		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, m->last_sent_diff);
+		return 0;
 	}
 	
 	// we check this after checking if the share is a valid block because... well, we want to try and build on our own block even on the off chance it's late.
