@@ -1034,13 +1034,12 @@ bool stratum_get_job(const T_DATUM_MINER_DATA * const m, const json_t * const jo
 		return false;
 	}
 	
+	// A quickdiff share for a job other than the one its quickdiff notify was sent for is
+	// refused too, but only in client_mining_submit after the block check (see
+	// datum_stratum_quickdiff_for_job), so a block in it is not lost.
 	if (!*out_quickdiff) {
 		*out_job_diff = m->stratum_job_diffs[*out_job_index];
 		*out_job_target = m->stratum_job_targets[*out_job_index];
-	} else if (!m->quickdiff_value || *out_job_index != m->quickdiff_job_index) {
-		// A quickdiff share must be for the job its quickdiff notify was sent for. The Q
-		// label alone used to select the quickdiff difficulty for any current job.
-		return false;
 	}
 	
 	*out_reject = DATUM_SHARE_REJECT_MALFORMED;
@@ -1052,6 +1051,12 @@ bool stratum_get_job(const T_DATUM_MINER_DATA * const m, const json_t * const jo
 	}
 	
 	return true;
+}
+
+// Whether a quickdiff (Q) share for this job is for the job the miner's quickdiff notify was
+// sent for. The Q label alone used to select the quickdiff difficulty for any current job.
+bool datum_stratum_quickdiff_for_job(const T_DATUM_MINER_DATA *m, uint16_t job_index) {
+	return m->quickdiff_value && job_index == m->quickdiff_job_index;
 }
 
 // CAUTION: modname MUST be part of username_s following a tilde
@@ -1418,6 +1423,14 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 		if (i) {
 			datum_blocktemplates_notifynew(new_notify_blockhash, job->height + 1);
 		}
+	}
+	
+	// A quickdiff share is only for the job its quickdiff notify was sent for. Checked after the
+	// block check, like the rejections below, so a block found in one is still submitted.
+	if (quickdiff && !datum_stratum_quickdiff_for_job(m, g_job_index)) {
+		send_unknown_work_error(c, id);
+		stratum_note_share(m, DATUM_SHARE_REJECT_UNKNOWN_JOB, job_diff);
+		return 0;
 	}
 	
 	// For ABW work the XOR key is withheld, so only Apex can classify a

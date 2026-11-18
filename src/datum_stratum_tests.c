@@ -1713,7 +1713,9 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		datum_test(datum_stratum_share_credit_diff(t_new, 16384, 1024) == 16384);
 	}
 
-	// A quickdiff (Q) share is only for the job its quickdiff notify was sent for.
+	// A quickdiff (Q) share is only for the job its quickdiff notify was sent for. The job lookup
+	// still resolves a Q share for another job, so client_mining_submit can try it as a block
+	// before refusing it; datum_stratum_quickdiff_for_job is what refuses it.
 	if (pool_min_open(&f, true)) {
 		char qid[40];
 		T_DATUM_STRATUM_JOB *jout = NULL;
@@ -1727,9 +1729,13 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		json_t * const jid = json_string(qid);
 		f.miner.quickdiff_value = 4096;
 		f.miner.quickdiff_job_index = 7;
-		datum_test(!stratum_get_job(&f.miner, jid, &jout, &jidx, &q, &empty, &jdiff, &jtarget, &cbi, &rej));
+		datum_test(stratum_get_job(&f.miner, jid, &jout, &jidx, &q, &empty, &jdiff, &jtarget, &cbi, &rej) && q && jidx == 0);
+		datum_test(!datum_stratum_quickdiff_for_job(&f.miner, jidx));
 		f.miner.quickdiff_job_index = 0;
 		datum_test(stratum_get_job(&f.miner, jid, &jout, &jidx, &q, &empty, &jdiff, &jtarget, &cbi, &rej) && q && jdiff == 4096);
+		datum_test(datum_stratum_quickdiff_for_job(&f.miner, jidx));
+		f.miner.quickdiff_value = 0;
+		datum_test(!datum_stratum_quickdiff_for_job(&f.miner, jidx));
 		json_decref(jid);
 		pool_min_close(&f);
 	}

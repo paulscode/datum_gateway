@@ -330,6 +330,7 @@ bool datum_stratum_extranonce2_zero_extend(const T_DATUM_MINER_DATA *m, unsigned
 int client_datum_capabilities(T_DATUM_CLIENT_DATA *c, uint64_t id);
 void datum_stratum_count_vardiff_share(T_DATUM_MINER_DATA *m, uint64_t job_diff);
 uint64_t datum_stratum_share_credit_diff(const uint8_t *share_hash, uint64_t job_diff, uint64_t served_diff);
+bool datum_stratum_quickdiff_for_job(const T_DATUM_MINER_DATA *m, uint16_t job_index);
 bool datum_stratum_share_forwardable(const uint8_t *share_hash, uint64_t job_diff, uint64_t commit_diff);
 enum {
 	DATUM_SHARE_ROUTE_FORWARD,	// send to the pool
