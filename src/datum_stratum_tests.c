@@ -1533,6 +1533,58 @@ static void datum_stratum_vardiff_below_pool_min_tests(void) {
 		pool_min_close(&f);
 	}
 
+	// A quickdiff while a newer job is still on its way to the miner (paced, or held for the
+	// coinbaser) sends only the new difficulty. The newer job then arrives once, as a regular
+	// job at that difficulty, and the job the miner holds keeps its target for shares in flight.
+	if (pool_min_open(&f, true)) {
+		static T_DATUM_STRATUM_JOB newer;
+		T_DATUM_STRATUM_JOB * const saved_slot = global_cur_stratum_jobs[1];
+		(void)pool_min_take_output(&f);
+		newer = f.job;
+		newer.global_index = 1;
+		global_cur_stratum_jobs[1] = &newer;
+		f.sdata->cur_stratum_job = &newer;
+		f.miner.current_diff = 16384;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.set_difficulty\",\"params\":[16383.75]") != NULL);
+		datum_test(strstr(out, "mining.notify") == NULL);
+		datum_test(f.miner.quickdiff_active);
+		datum_test(f.miner.last_sent_stratum_job_index == 0);
+		datum_test(f.miner.stratum_job_diffs[0] == 1024);
+		datum_test(f.miner.stratum_job_diffs[1] == 0);
+		datum_test(send_mining_notify(f.client, false, false, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "mining.notify") != NULL);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"Q") == NULL);
+		datum_test(!f.miner.quickdiff_active);
+		datum_test(f.miner.last_sent_stratum_job_index == 1);
+		datum_test(f.miner.stratum_job_diffs[1] == 16384);
+		datum_test(f.miner.stratum_job_commit_diffs[1] == (UINT64_C(1) << 20));
+		datum_test(f.miner.stratum_job_diffs[0] == 1024);
+		global_cur_stratum_jobs[1] = saved_slot;
+		pool_min_close(&f);
+	}
+	
+	// When the pool minimum has changed since the miner's job was sent, the work that would go
+	// out now differs from what it holds, so a served-only quickdiff is still a Q job, committed
+	// to the new minimum. The entries for the miner's in-flight shares are left alone.
+	if (pool_min_open(&f, true)) {
+		(void)pool_min_take_output(&f);
+		datum_config.override_vardiff_min = UINT64_C(1) << 21;
+		f.miner.current_diff = 16384;
+		datum_test(send_mining_notify(f.client, true, true, false) == 0);
+		out = pool_min_take_output(&f);
+		datum_test(strstr(out, "\"mining.notify\",\"params\":[\"Q") != NULL);
+		datum_test(f.miner.quickdiff_commit_value == (UINT64_C(1) << 21));
+		datum_test(f.miner.quickdiff_value == 16384);
+		pool_min_coinb1_hex(&f, floorPoT(UINT64_C(1) << 21), coinb1_hex);
+		datum_test(coinb1_hex[0] && strstr(out, coinb1_hex) != NULL);
+		datum_test(f.miner.stratum_job_diffs[0] == 1024);
+		datum_test(f.miner.stratum_job_commit_diffs[0] == (UINT64_C(1) << 20));
+		pool_min_close(&f);
+	}
+	
 	// After a subsidy-only (new block) job, a served-only quickdiff sends new work instead of
 	// leaving the miner on the empty version until the next regular notify.
 	if (pool_min_open(&f, true)) {

@@ -1918,30 +1918,26 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 
 	// A quickdiff job is only new work because its committed target byte differs from the
 	// job the miner already holds. When vardiff_below_pool_min holds the commitment at the
-	// pool minimum, a quickdiff that only raises the SERVED difficulty would resend identical
-	// work with clean=true: the miner would redo it and resubmit duplicates. Send just the new
-	// difficulty instead (done above) and leave the miner on its current job. Its shares keep
-	// validating against that job's easier target, so none in flight are rejected, and the next
-	// regular notify carries the new difficulty. quickdiff_active stays set until then so a
-	// miner that only applies set_difficulty on new work cannot trigger repeated jumps.
-	if (quickdiff && j->is_datum_job && commit_diff > m->last_sent_diff) {
-		if (m->last_sent_stratum_job_index == j->global_index) {
-			if (!m->last_sent_subsidy_only &&
-			    floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)) {
-				m->quickdiff_active = true;
-				return 0;
-			}
-			// Same job, but different work from what the miner holds (its full coinbase after
-			// the subsidy-only version, or a new pool minimum): a quickdiff job, which leaves
-			// the stored entries for the miner's in-flight shares alone.
-		} else {
-			// A newer job the miner has not had yet: its commitment is pinned at the pool
-			// minimum too, so a quickdiff version of it would be the same work as its regular
-			// version, and sending both makes the miner redo it. Send it as a regular job.
-			quickdiff = false;
-		}
+	// pool minimum, a quickdiff that only raises the SERVED difficulty would send work that
+	// is identical to a regular job, and the miner would redo it and resubmit duplicates.
+	// Send just the new difficulty instead (done above) and leave the miner on the job it
+	// holds, whose stored easier target keeps accepting its in-flight shares. The next regular
+	// notify carries the new difficulty; quickdiff_active stays set until then, so a miner that
+	// applies set_difficulty only to new work cannot trigger repeated jumps.
+	//
+	// That covers the miner's current job and also a newer one it has not been sent yet:
+	// the newer job is on its way as a regular notify (paced, or held for the coinbaser), and
+	// a quickdiff copy of it now would be the same work twice. The exception is the miner's
+	// current job when it holds different work from what would go out now: the subsidy-only
+	// version sent at a new block, or a commitment from before the pool minimum changed.
+	if (quickdiff && j->is_datum_job && commit_diff > m->last_sent_diff &&
+	    (m->last_sent_stratum_job_index != j->global_index ||
+	     (!m->last_sent_subsidy_only &&
+	      floorPoT(m->stratum_job_commit_diffs[j->global_index]) == floorPoT(commit_diff)))) {
+		m->quickdiff_active = true;
+		return 0;
 	}
-
+	
 	// if this is a quick diff change, the job is likely identical to one we've already sent
 	// in which case, we don't want to clobber the normal target table and reject shares that we shouldn't
 	if (!quickdiff) {
